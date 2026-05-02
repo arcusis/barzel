@@ -1,6 +1,8 @@
 use crate::detect::detect_project;
 use crate::error::Result;
+use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::runners::proptest::ProptestRunner;
 use owo_colors::OwoColorize;
 use std::path::Path;
 use std::process::Command;
@@ -18,18 +20,22 @@ pub fn run_verification(target: Option<&Path>, layers: Option<Vec<String>>, stdi
         );
     }
 
-    let mut report = BarzelReport::new(project.clone());
-    let _start = Instant::now();
+    // Use the new plugin-based orchestrator
+    let proptest_runner = ProptestRunner;
+    let runners: Vec<&dyn crate::plugin::TestRunner> = vec![&proptest_runner];
 
+    let orchestrator = VerificationOrchestrator::new(runners);
+    let mut report = orchestrator.run(&project)?;
+
+    // For now, still run the old structural and hostile layers (will be migrated next)
     let enabled_layers = layers.unwrap_or_else(|| {
-        vec!["logic".to_string(), "structural".to_string(), "hostile".to_string()]
+        vec!["structural".to_string(), "hostile".to_string()]
     });
 
     for layer_name in &enabled_layers {
         let layer_start = Instant::now();
 
         let layer_result = match layer_name.as_str() {
-            "logic" => run_logic_layer(&project, layer_start),
             "structural" => run_structural_layer(&project, layer_start),
             "hostile" => run_hostile_layer(&project, layer_start),
             _ => LayerResult {
