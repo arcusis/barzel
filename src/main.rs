@@ -3,8 +3,10 @@ mod config;
 mod detect;
 mod error;
 mod init;
+mod plugin;
 mod report;
 mod run;
+mod runners;
 
 use chrono::Utc;
 use clap::Parser;
