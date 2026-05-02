@@ -172,25 +172,128 @@ fn run_logic_layer(project: &crate::detect::ProjectInfo, start: Instant) -> Laye
     }
 }
 
-fn run_structural_layer(_project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
-    LayerResult {
-        name: "structural".to_string(),
-        status: LayerStatus::Partial,
-        findings: vec![Finding {
-            severity: Severity::Info,
-            code: "STRUCTURAL_STUB".to_string(),
-            message: "Structural layer (Mutation Testing + MC/DC) not yet implemented — coming in M2".to_string(),
-            location: None,
-        }],
-        metrics: LayerMetrics {
-            tests_run: 0,
-            passed: 0,
-            failed: 0,
-            coverage: None,
-            mutation_score: None,
-        },
-        duration_ms: start.elapsed().as_millis() as u64,
+fn run_structural_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
+    let project_root = Path::new(&project.root);
+
+    // Check if cargo-mutants is available
+    let mutants_available = Command::new("cargo")
+        .args(["mutants", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !mutants_available {
+        return LayerResult {
+            name: "structural".to_string(),
+            status: LayerStatus::Skipped,
+            findings: vec![Finding {
+                severity: Severity::Info,
+                code: "NO_MUTATION_TESTING".to_string(),
+                message: "Mutation testing not available. Install `cargo-mutants` for high-quality test verification (aim for ≥95% mutation score).".to_string(),
+                location: None,
+            }],
+            metrics: LayerMetrics {
+                tests_run: 0,
+                passed: 0,
+                failed: 0,
+                coverage: None,
+                mutation_score: None,
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+        };
     }
+
+    // cargo-mutants is available — run it (this can take a long time, so we do a quick check first)
+    // For M3 we run with --timeout 30s to keep it practical
+    let output = Command::new("cargo")
+        .args(["mutants", "--timeout", "30", "--no-shuffle"])
+        .current_dir(project_root)
+        .output();
+
+    match output {
+        Ok(result) => {
+            let output_str = String::from_utf8_lossy(&result.stdout);
+            let mutation_score = parse_mutation_score(&output_str);
+
+            let status = if let Some(score) = mutation_score {
+                if score >= 95.0 {
+                    LayerStatus::Pass
+                } else {
+                    LayerStatus::Partial
+                }
+            } else {
+                LayerStatus::Partial
+            };
+
+            let findings = if let Some(score) = mutation_score {
+                if score < 95.0 {
+                    vec![Finding {
+                        severity: Severity::High,
+                        code: "LOW_MUTATION_SCORE".to_string(),
+                        message: format!("Mutation score is {:.1}% (target ≥95%)", score),
+                        location: None,
+                    }]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![Finding {
+                    severity: Severity::Info,
+                    code: "MUTATION_RUN_COMPLETE".to_string(),
+                    message: "Mutation testing completed. Check .cargo/mutants/ for detailed results.".to_string(),
+                    location: None,
+                }]
+            };
+
+            LayerResult {
+                name: "structural".to_string(),
+                status,
+                findings,
+                metrics: LayerMetrics {
+                    tests_run: 0,
+                    passed: 0,
+                    failed: 0,
+                    coverage: None,
+                    mutation_score,
+                },
+                duration_ms: start.elapsed().as_millis() as u64,
+            }
+        }
+        Err(e) => LayerResult {
+            name: "structural".to_string(),
+            status: LayerStatus::Fail,
+            findings: vec![Finding {
+                severity: Severity::Critical,
+                code: "MUTATION_EXECUTION_FAILED".to_string(),
+                message: format!("Failed to run cargo-mutants: {}", e),
+                location: None,
+            }],
+            metrics: LayerMetrics {
+                tests_run: 0,
+                passed: 0,
+                failed: 1,
+                coverage: None,
+                mutation_score: None,
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+        },
+    }
+}
+
+fn parse_mutation_score(output: &str) -> Option<f64> {
+    // Simple parser for cargo-mutants output
+    for line in output.lines() {
+        if line.contains("mutation score") {
+            if let Some(percent) = line.split('%').next() {
+                if let Some(num_str) = percent.split_whitespace().last() {
+                    if let Ok(score) = num_str.parse::<f64>() {
+                        return Some(score);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn run_hostile_layer(_project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
