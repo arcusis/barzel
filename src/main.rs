@@ -4,6 +4,7 @@ mod config;
 mod detect;
 mod error;
 mod init;
+mod orchestrator;
 mod plugin;
 mod report;
 mod run;
