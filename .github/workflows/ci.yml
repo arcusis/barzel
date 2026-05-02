@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [production, main, feature/*]
+  pull_request:
+    branches: [production, main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check + Clippy + Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo Check
+        run: cargo check --all-targets
+
+      - name: Clippy (strict)
+        run: cargo clippy -- -D warnings
+
+      - name: Run Tests
+        run: cargo test
+
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: barzel-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/barzel*
+
+  self-test:
+    name: Self-Test (Barzel tests itself)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Barzel
+        run: cargo build --release
+
+      - name: Run Barzel on itself
+        run: ./target/release/barzel run --layer logic,structural,hostile || true
+
+      - name: Show Report
+        run: |
+          echo "=== Latest Barzel Report ==="
+          ls -la .barzel/reports/ || echo "No reports generated yet"
+          cat .barzel/reports/*.json 2>/dev/null | head -100 || echo "No JSON report found"
