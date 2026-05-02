@@ -11,17 +11,28 @@ It implements four verification layers:
 
 ## Installation
 
+### From crates.io (recommended)
+
 ```bash
 cargo install barzel
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/arcusis/barzel
 cd barzel
 cargo build --release
+# Binary will be at target/release/barzel
 ```
+
+### Homebrew (coming soon)
+
+```bash
+brew install barzel
+```
+
+> **Note:** Barzel is currently in active development. The binary is fully functional and can be built from source today.
 
 ## Usage
 
