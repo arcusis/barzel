@@ -12,6 +12,7 @@ pub trait TestRunner: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Which verification layer this runner belongs to
+    #[allow(dead_code)]
     fn layer(&self) -> Layer;
 
     /// Quick check whether this runner can operate on the given project
@@ -21,12 +22,14 @@ pub trait TestRunner: Send + Sync {
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult>;
 
     /// Optional: parse raw tool output into Findings (for tools that output text)
-    fn parse_results(&self, raw_output: &str) -> Vec<Finding> {
+    #[allow(dead_code)]
+    fn parse_results(&self, _raw_output: &str) -> Vec<Finding> {
         vec![]
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Layer {
     Logic,
     Structural,

@@ -1,7 +1,7 @@
 use crate::detect::detect_project;
 use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
-use crate::report::{BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use crate::runners::proptest::ProptestRunner;
 use owo_colors::OwoColorize;
 use std::path::Path;
@@ -82,6 +82,7 @@ pub fn run_verification(target: Option<&Path>, layers: Option<Vec<String>>, stdi
     Ok(())
 }
 
+#[allow(dead_code)]
 fn run_logic_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
     let project_root = Path::new(&project.root);
     let cargo_toml = project_root.join("Cargo.toml");

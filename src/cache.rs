@@ -4,6 +4,7 @@ use std::path::Path;
 
 /// Simple file-based cache key generator.
 /// In a real implementation this would hash the AST or use a proper content hash.
+#[allow(dead_code)]
 pub fn compute_project_hash(project_root: &Path) -> u64 {
     let mut hasher = DefaultHasher::new();
 
@@ -29,7 +30,8 @@ pub fn compute_project_hash(project_root: &Path) -> u64 {
 }
 
 /// Check if we can skip running a layer based on cache
-pub fn should_skip_layer(project_root: &Path, layer: &str, last_hash: u64) -> bool {
+#[allow(dead_code)]
+pub fn should_skip_layer(project_root: &Path, _layer: &str, last_hash: u64) -> bool {
     let current_hash = compute_project_hash(project_root);
     current_hash == last_hash
 }
