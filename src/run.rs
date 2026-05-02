@@ -1,7 +1,7 @@
 use crate::detect::detect_project;
 use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
-use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::report::{BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use crate::runners::proptest::ProptestRunner;
 use owo_colors::OwoColorize;
 use std::path::Path;
