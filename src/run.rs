@@ -296,23 +296,108 @@ fn parse_mutation_score(output: &str) -> Option<f64> {
     None
 }
 
-fn run_hostile_layer(_project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
-    LayerResult {
-        name: "hostile".to_string(),
-        status: LayerStatus::Partial,
-        findings: vec![Finding {
-            severity: Severity::Info,
-            code: "HOSTILE_STUB".to_string(),
-            message: "Hostile layer (Fuzzing + SAST) not yet implemented — coming in M2".to_string(),
-            location: None,
-        }],
-        metrics: LayerMetrics {
-            tests_run: 0,
-            passed: 0,
-            failed: 0,
-            coverage: None,
-            mutation_score: None,
-        },
-        duration_ms: start.elapsed().as_millis() as u64,
+fn run_hostile_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
+    let project_root = Path::new(&project.root);
+
+    // Check if semgrep is available
+    let semgrep_available = Command::new("semgrep")
+        .args(["--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !semgrep_available {
+        return LayerResult {
+            name: "hostile".to_string(),
+            status: LayerStatus::Skipped,
+            findings: vec![Finding {
+                severity: Severity::Info,
+                code: "NO_SAST".to_string(),
+                message: "SAST not available. Install `semgrep` for automated security scanning.".to_string(),
+                location: None,
+            }],
+            metrics: LayerMetrics {
+                tests_run: 0,
+                passed: 0,
+                failed: 0,
+                coverage: None,
+                mutation_score: None,
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+        };
     }
+
+    // Run semgrep with default rules (quick scan)
+    let output = Command::new("semgrep")
+        .args(["--json", "--quiet", "."])
+        .current_dir(project_root)
+        .output();
+
+    match output {
+        Ok(result) => {
+            let output_str = String::from_utf8_lossy(&result.stdout);
+            let findings = parse_semgrep_findings(&output_str);
+
+            let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
+                LayerStatus::Fail
+            } else if !findings.is_empty() {
+                LayerStatus::Partial
+            } else {
+                LayerStatus::Pass
+            };
+
+            LayerResult {
+                name: "hostile".to_string(),
+                status,
+                findings,
+                metrics: LayerMetrics {
+                    tests_run: 0,
+                    passed: 0,
+                    failed: 0,
+                    coverage: None,
+                    mutation_score: None,
+                },
+                duration_ms: start.elapsed().as_millis() as u64,
+            }
+        }
+        Err(e) => LayerResult {
+            name: "hostile".to_string(),
+            status: LayerStatus::Fail,
+            findings: vec![Finding {
+                severity: Severity::Critical,
+                code: "SAST_EXECUTION_FAILED".to_string(),
+                message: format!("Failed to run semgrep: {}", e),
+                location: None,
+            }],
+            metrics: LayerMetrics {
+                tests_run: 0,
+                passed: 0,
+                failed: 1,
+                coverage: None,
+                mutation_score: None,
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+        },
+    }
+}
+
+fn parse_semgrep_findings(output: &str) -> Vec<Finding> {
+    // Very simple parser — in production we'd use proper JSON deserialization
+    let mut findings = Vec::new();
+
+    if output.contains("\"results\":[]") || output.is_empty() {
+        return findings;
+    }
+
+    // If there are results, create a generic finding
+    if output.contains("\"results\"") {
+        findings.push(Finding {
+            severity: Severity::Medium,
+            code: "SAST_FINDINGS".to_string(),
+            message: "Semgrep found potential security issues. Run `semgrep .` for details.".to_string(),
+            location: None,
+        });
+    }
+
+    findings
 }
