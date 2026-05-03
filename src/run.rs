@@ -183,7 +183,7 @@ pub fn run_verification(
                         );
                         println!();
                     }
-                    aggregate.layers.push(LayerResult {
+                    aggregate.add_layer(LayerResult {
                         name: "skipped".to_string(),
                         runner: "diff".to_string(),
                         status: LayerStatus::Skipped,
@@ -249,7 +249,7 @@ fn skip_report(project: &ProjectInfo, since: Option<&str>, ctx: &DiffContext) ->
     let mut report = BarzelReport::new(project.clone());
     report.diff_since = since.map(str::to_string);
     report.diff_changed_files = Some(ctx.changed_files.len());
-    report.layers.push(LayerResult {
+    report.add_layer(LayerResult {
         name: "skipped".to_string(),
         runner: "diff".to_string(),
         status: LayerStatus::Skipped,
@@ -705,5 +705,17 @@ mod tests {
         let ctx = diff_ctx_empty();
         let report = skip_report(&project_info(), Some("HEAD"), &ctx);
         assert!(matches!(report.status, ReportStatus::Pass));
+    }
+
+    #[test]
+    fn skip_report_summary_matches_layer_findings() {
+        let ctx = diff_ctx_empty();
+        let report = skip_report(&project_info(), Some("HEAD~1"), &ctx);
+        let layer_finding_count: usize = report.layers.iter().map(|l| l.findings.len()).sum();
+        assert_eq!(
+            report.summary.total_findings, layer_finding_count,
+            "summary.total_findings must match actual finding count in layers"
+        );
+        assert_eq!(report.summary.total_findings, 1, "skip report has exactly one Info finding");
     }
 }
