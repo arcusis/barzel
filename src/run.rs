@@ -58,7 +58,7 @@ pub fn run_verification(
             Ok(report)
         }
 
-        WorkspaceInfo::Multi { root: _, kind, members } => {
+        WorkspaceInfo::Multi { kind, members } => {
             if !stdio && !json_out {
                 println!(
                     "{} {} workspace — {} package(s) at {}",

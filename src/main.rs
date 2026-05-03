@@ -576,3 +576,156 @@ fn main() -> ExitCode {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::{Language, ProjectFrameworks, ProjectInfo};
+    use crate::report::{
+        BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, ReportStatus, Severity,
+        Summary, WorkspaceMemberReport,
+    };
+
+    fn make_finding(severity: Severity, code: &str) -> Finding {
+        Finding {
+            severity,
+            code: code.to_string(),
+            message: format!("{} issue", code),
+            location: Some("src/app.py:10".to_string()),
+            reproduce_cmd: Some(format!("grep -n {} src/app.py", code)),
+            suggestion: None,
+        }
+    }
+
+    fn make_layer(name: &str, runner: &str, findings: Vec<Finding>) -> LayerResult {
+        let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+            LayerStatus::Fail
+        } else {
+            LayerStatus::Pass
+        };
+        LayerResult {
+            name: name.to_string(),
+            runner: runner.to_string(),
+            status,
+            findings,
+            metrics: LayerMetrics::default(),
+            duration_ms: 0,
+        }
+    }
+
+    fn workspace_report() -> BarzelReport {
+        let project = ProjectInfo {
+            language: Language::Unknown,
+            root: "/tmp/ws".to_string(),
+            has_tests: true,
+            package_name: Some("cargo-workspace".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        let mut report = BarzelReport::new(project);
+        report.status = ReportStatus::Fail;
+
+        // pkg-a has a Critical finding
+        let pkg_a_layer = make_layer("hostile", "ai-sec", vec![
+            make_finding(Severity::Critical, "HARDCODED_API_KEY"),
+        ]);
+        let pkg_b_layer = make_layer("logic", "pytest", vec![
+            make_finding(Severity::High, "TEST_FAILURE"),
+        ]);
+
+        report.workspace_members = vec![
+            WorkspaceMemberReport {
+                package_path: "crates/a".to_string(),
+                language: "rust".to_string(),
+                status: ReportStatus::Fail,
+                layers: vec![pkg_a_layer.clone()],
+                summary: Summary {
+                    total_findings: 1, critical: 1, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Fail,
+                },
+            },
+            WorkspaceMemberReport {
+                package_path: "crates/b".to_string(),
+                language: "rust".to_string(),
+                status: ReportStatus::Partial,
+                layers: vec![pkg_b_layer.clone()],
+                summary: Summary {
+                    total_findings: 1, critical: 0, high: 1, medium: 0, low: 0,
+                    overall_status: ReportStatus::Partial,
+                },
+            },
+        ];
+
+        // Aggregate layers
+        report.layers = vec![pkg_a_layer, pkg_b_layer];
+
+        report
+    }
+
+    #[test]
+    fn workspace_action_items_include_package_path() {
+        let report = workspace_report();
+        let payload = build_run_data(&report);
+
+        let items = payload["action_items"].as_array().unwrap();
+        assert!(!items.is_empty(), "action_items must not be empty for workspace with findings");
+        for item in items {
+            assert!(item.get("package_path").is_some(), "each action_item must have package_path");
+            assert!(!item["package_path"].as_str().unwrap_or("").is_empty());
+        }
+    }
+
+    #[test]
+    fn workspace_action_items_are_priority_sorted() {
+        let report = workspace_report();
+        let payload = build_run_data(&report);
+
+        let items = payload["action_items"].as_array().unwrap();
+        let priorities: Vec<u64> = items.iter()
+            .map(|v| v["priority"].as_u64().unwrap_or(99))
+            .collect();
+        let mut sorted = priorities.clone();
+        sorted.sort();
+        assert_eq!(priorities, sorted, "action_items must be sorted by priority (critical first)");
+    }
+
+    #[test]
+    fn workspace_payload_has_top_level_layers() {
+        let report = workspace_report();
+        let payload = build_run_data(&report);
+
+        let layers = payload["layers"].as_array().unwrap();
+        assert!(!layers.is_empty(), "data.layers must be present even for workspaces");
+    }
+
+    #[test]
+    fn workspace_payload_has_is_workspace_flag() {
+        let report = workspace_report();
+        let payload = build_run_data(&report);
+        assert_eq!(payload["is_workspace"].as_bool(), Some(true));
+        assert!(payload.get("packages").is_some());
+    }
+
+    #[test]
+    fn single_project_action_items_have_no_package_path() {
+        let project = ProjectInfo {
+            language: Language::Python,
+            root: "/tmp/single".to_string(),
+            has_tests: true,
+            package_name: Some("myapp".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        let mut report = BarzelReport::new(project);
+        report.layers = vec![make_layer("hostile", "bandit", vec![
+            make_finding(Severity::High, "SQL_INJECTION"),
+        ])];
+        report.status = ReportStatus::Partial;
+
+        let payload = build_run_data(&report);
+        assert_eq!(payload.get("is_workspace"), None, "single project must not have is_workspace");
+        let items = payload["action_items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        for item in items {
+            assert!(item.get("package_path").is_none(), "single project action_items must not have package_path");
+        }
+    }
+}

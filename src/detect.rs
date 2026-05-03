@@ -51,8 +51,6 @@ pub enum WorkspaceInfo {
     /// Monorepo with multiple independently runnable packages.
     /// Each member is (relative_path_from_root, ProjectInfo).
     Multi {
-        #[allow(dead_code)]
-        root: String,
         kind: WorkspaceKind,
         members: Vec<(String, ProjectInfo)>,
     },
@@ -85,7 +83,6 @@ impl std::fmt::Display for WorkspaceKind {
 /// Single-project behavior is completely unchanged.
 pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let root_str = root.to_string_lossy().to_string();
 
     // Cargo workspace: root Cargo.toml with [workspace] section
     if root.join("Cargo.toml").exists() {
@@ -93,7 +90,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         if content.contains("[workspace]") {
             let members = parse_cargo_workspace_members(&root, &content);
             if !members.is_empty() {
-                return Ok(WorkspaceInfo::Multi { root: root_str, kind: WorkspaceKind::Cargo, members });
+                return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Cargo, members });
             }
         }
     }
@@ -103,7 +100,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         let content = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap_or_default();
         let members = expand_glob_patterns(&root, &content);
         if !members.is_empty() {
-            return Ok(WorkspaceInfo::Multi { root: root_str, kind: WorkspaceKind::Pnpm, members });
+            return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Pnpm, members });
         }
     }
 
@@ -114,7 +111,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
             let members = parse_npm_workspace_members(&root, &pkg);
             if !members.is_empty() {
                 let kind = if root.join("turbo.json").exists() { WorkspaceKind::Turbo } else { WorkspaceKind::Npm };
-                return Ok(WorkspaceInfo::Multi { root: root_str, kind, members });
+                return Ok(WorkspaceInfo::Multi { kind, members });
             }
         }
     }
@@ -124,7 +121,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         let content = std::fs::read_to_string(root.join("lerna.json")).unwrap_or_default();
         let members = parse_lerna_members(&root, &content);
         if !members.is_empty() {
-            return Ok(WorkspaceInfo::Multi { root: root_str, kind: WorkspaceKind::Lerna, members });
+            return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Lerna, members });
         }
     }
 
@@ -132,6 +129,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
 }
 
 /// Returns `(relative_path, ProjectInfo)` pairs from Cargo.toml [workspace] members list.
+/// Handles both literal paths (`"crates/foo"`) and glob patterns (`"crates/*"`).
 fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, ProjectInfo)> {
     let mut members = Vec::new();
     let mut in_members = false;
@@ -147,10 +145,16 @@ fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, Pro
             if let Some(end) = s.find('"') {
                 let rel = &s[..end];
                 if !rel.is_empty() {
-                    let full = root.join(rel);
-                    if full.is_dir() {
-                        if let Ok(info) = detect_project(&full) {
-                            members.push((rel.to_string(), info));
+                    if rel.contains('*') {
+                        // Glob pattern — route through shared expansion logic
+                        let fake = format!("- {}", rel);
+                        members.extend(expand_glob_patterns(root, &fake));
+                    } else {
+                        let full = root.join(rel);
+                        if full.is_dir() {
+                            if let Ok(info) = detect_project(&full) {
+                                members.push((rel.to_string(), info));
+                            }
                         }
                     }
                 }
@@ -816,6 +820,31 @@ mod tests {
                 assert_eq!(members[0].1.language, Language::Python);
             }
             _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn cargo_workspace_with_glob_members_returns_multi() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/*\"]\n").unwrap();
+        let a = dir.path().join("crates/alpha");
+        let b = dir.path().join("crates/beta");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("Cargo.toml"), b"[package]\nname=\"alpha\"").unwrap();
+        fs::write(b.join("Cargo.toml"), b"[package]\nname=\"beta\"").unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { kind, members, .. } => {
+                assert_eq!(kind, WorkspaceKind::Cargo);
+                assert_eq!(members.len(), 2);
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.iter().any(|p| p.ends_with("alpha")));
+                assert!(paths.iter().any(|p| p.ends_with("beta")));
+            }
+            _ => panic!("Expected Multi from cargo glob workspace"),
         }
     }
 

@@ -258,16 +258,19 @@ fn parse_semgrep_for_ai(stdout: &str) -> Vec<Finding> {
             })
             .unwrap_or(Severity::Medium);
 
+        let code = item.get("check_id").and_then(|c| c.as_str()).unwrap_or("AI_SEC").to_string();
         Finding {
             severity,
-            code: item.get("check_id").and_then(|c| c.as_str()).unwrap_or("AI_SEC").to_string(),
+            code: code.clone(),
             message: item.get("extra").and_then(|e| e.get("message")).and_then(|m| m.as_str())
                 .unwrap_or("AI security issue").to_string(),
             location: item.get("path").and_then(|p| p.as_str()).map(|p| {
                 let line = item.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
                 format!("{}:{}", p, line)
             }),
-            reproduce_cmd: None,
+            reproduce_cmd: item.get("path").and_then(|p| p.as_str()).map(|p| {
+                format!("semgrep --config={} {} 2>&1 | head -20", code, p)
+            }),
             suggestion: Some("Review the flagged code for AI-specific security risks.".to_string()),
         }
     }).collect()
@@ -384,5 +387,26 @@ mod tests {
     fn parse_pytest_output_parses_passed() {
         let (p, f, e) = crate::runners::pytest::parse_pytest_output("5 passed in 0.45s");
         assert_eq!(p, 5); assert_eq!(f, 0); assert_eq!(e, 0);
+    }
+
+    #[test]
+    fn semgrep_findings_have_reproduce_cmd() {
+        let stdout = r#"{
+            "results": [{
+                "check_id": "python.secrets.hardcoded-api-key",
+                "path": "src/app.py",
+                "start": {"line": 10},
+                "extra": {
+                    "severity": "ERROR",
+                    "message": "Hardcoded API key detected"
+                }
+            }]
+        }"#;
+        let findings = parse_semgrep_for_ai(stdout);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].reproduce_cmd.is_some(), "semgrep finding must have reproduce_cmd");
+        let cmd = findings[0].reproduce_cmd.as_ref().unwrap();
+        assert!(cmd.contains("python.secrets.hardcoded-api-key"));
+        assert!(cmd.contains("src/app.py"));
     }
 }
