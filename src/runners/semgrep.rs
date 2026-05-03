@@ -65,7 +65,7 @@ fn build_semgrep_args(ruleset: &str, custom_rules: &[PathBuf]) -> Vec<String> {
 }
 
 /// Format all `--config` values into a shell-pasteable reproduce command.
-/// Config paths and the target are shell-quoted to handle spaces in paths.
+/// Config paths are shell-quoted to handle spaces; the literal target `.` is not quoted.
 fn build_error_reproduce_cmd(ruleset: &str, custom_rules: &[PathBuf]) -> String {
     let configs: Vec<String> = std::iter::once(format!("--config {}", shell_quote(ruleset)))
         .chain(custom_rules.iter().map(|p| format!("--config {}", shell_quote(&p.to_string_lossy()))))
