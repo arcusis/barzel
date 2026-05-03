@@ -365,16 +365,24 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     }
 
     let tools: &[Tool] = &[
+        // Rust toolchain
         Tool { name: "cargo", check_args: &["--version"], layer: "core", install: "https://rustup.rs" },
         Tool { name: "cargo kani", check_args: &["kani", "--version"], layer: "logic", install: "cargo install --locked kani-verifier" },
         Tool { name: "cargo mutants", check_args: &["mutants", "--version"], layer: "structural", install: "cargo install cargo-mutants" },
         Tool { name: "cargo fuzz", check_args: &["fuzz", "--version"], layer: "hostile", install: "cargo install cargo-fuzz" },
-        Tool { name: "semgrep", check_args: &["--version"], layer: "hostile", install: "pip install semgrep" },
+        // Python toolchain
         Tool { name: "pytest", check_args: &["--version"], layer: "logic", install: "pip install pytest" },
+        Tool { name: "mypy", check_args: &["--version"], layer: "logic", install: "pip install mypy" },
         Tool { name: "mutmut", check_args: &["--version"], layer: "structural", install: "pip install mutmut" },
         Tool { name: "bandit", check_args: &["--version"], layer: "hostile", install: "pip install bandit" },
-        Tool { name: "npx", check_args: &["--version"], layer: "core", install: "Install Node.js from https://nodejs.org" },
-        Tool { name: "node", check_args: &["--version"], layer: "core", install: "Install Node.js from https://nodejs.org" },
+        // TypeScript/Node.js toolchain
+        Tool { name: "node", check_args: &["--version"], layer: "core", install: "https://nodejs.org" },
+        Tool { name: "npx", check_args: &["--version"], layer: "core", install: "https://nodejs.org" },
+        // (jest/vitest/tsc/eslint are checked via node_modules/.bin — no global install needed)
+        // Cross-language SAST
+        Tool { name: "semgrep", check_args: &["--version"], layer: "hostile", install: "pip install semgrep  OR  brew install semgrep" },
+        // Go toolchain
+        Tool { name: "go", check_args: &["version"], layer: "core", install: "https://go.dev/dl" },
     ];
 
     let mut missing = Vec::new();
