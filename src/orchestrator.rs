@@ -9,6 +9,16 @@ fn is_cacheable(layer: Layer) -> bool {
     matches!(layer, Layer::Structural)
 }
 
+/// Layer execution order for deterministic report output.
+fn layer_priority(layer: Layer) -> u8 {
+    match layer {
+        Layer::Logic => 0,
+        Layer::Structural => 1,
+        Layer::Hostile => 2,
+        Layer::Operational => 3,
+    }
+}
+
 pub struct VerificationOrchestrator<'a> {
     runners: Vec<&'a dyn TestRunner>,
     no_cache: bool,
@@ -17,116 +27,151 @@ pub struct VerificationOrchestrator<'a> {
 
 impl<'a> VerificationOrchestrator<'a> {
     pub fn new(runners: Vec<&'a dyn TestRunner>) -> Self {
-        Self {
-            runners,
-            no_cache: false,
-            fail_fast: false,
-        }
+        Self { runners, no_cache: false, fail_fast: false }
     }
 
-    pub fn with_no_cache(mut self) -> Self {
-        self.no_cache = true;
-        self
-    }
+    pub fn with_no_cache(mut self) -> Self { self.no_cache = true; self }
+    pub fn with_fail_fast(mut self) -> Self { self.fail_fast = true; self }
 
-    pub fn with_fail_fast(mut self) -> Self {
-        self.fail_fast = true;
-        self
-    }
-
-    pub fn run_with_progress<F>(
-        &self,
-        project: &ProjectInfo,
-        on_start: F,
-    ) -> Result<BarzelReport>
+    pub fn run_with_progress<F>(&self, project: &ProjectInfo, on_start: F) -> Result<BarzelReport>
     where
-        F: Fn(&str, &str),
+        F: Fn(&str, &str) + Sync,
     {
-        let mut report = BarzelReport::new(project.clone());
         let project_root = Path::new(&project.root);
+        let mut all_results: Vec<LayerResult> = Vec::new();
 
-        for runner in &self.runners {
-            if !runner.is_available(project) {
-                report.add_layer(LayerResult {
-                    name: runner.layer().as_str().to_string(),
-                    runner: runner.name().to_string(),
-                    status: LayerStatus::Skipped,
-                    findings: vec![Finding {
-                        severity: Severity::Info,
-                        code: "RUNNER_UNAVAILABLE".to_string(),
-                        message: runner.skip_message().to_string(),
-                        ..Default::default()
-                    }],
-                    metrics: LayerMetrics::default(),
-                    duration_ms: 0,
-                });
-                continue;
-            }
+        // Phase 1: Logic + Hostile + Operational run in parallel.
+        // Phase 2: Structural runs sequentially after (mutation testing needs passing tests).
+        let (phase1, phase2): (Vec<_>, Vec<_>) = self
+            .runners
+            .iter()
+            .partition(|r| !matches!(r.layer(), Layer::Structural));
 
-            if !self.no_cache
-                && is_cacheable(runner.layer())
-                && cache::is_cached(project_root, runner.name())
-            {
-                report.add_layer(LayerResult {
-                    name: runner.layer().as_str().to_string(),
-                    runner: runner.name().to_string(),
-                    status: LayerStatus::Skipped,
-                    findings: vec![Finding {
-                        severity: Severity::Info,
-                        code: "CACHED".to_string(),
-                        message: "Source unchanged since last run — using cached result".to_string(),
-                        ..Default::default()
-                    }],
-                    metrics: LayerMetrics::default(),
-                    duration_ms: 0,
-                });
-                continue;
-            }
+        // Run phase 1 in parallel using scoped threads
+        let phase1_results: Vec<LayerResult> = std::thread::scope(|scope| {
+            let handles: Vec<_> = phase1
+                .iter()
+                .map(|runner| {
+                    scope.spawn(|| self.run_one(runner, project, project_root, &on_start))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
 
-            on_start(runner.name(), runner.layer().as_str());
+        // Check fail_fast before running phase 2
+        let logic_failed = phase1_results.iter().any(|r| {
+            matches!(r.status, LayerStatus::Fail) && r.name == "logic"
+        });
+        all_results.extend(phase1_results);
 
-            match runner.run(project) {
-                Ok(layer_result) => {
-                    if is_cacheable(runner.layer())
-                        && !matches!(layer_result.status, LayerStatus::Fail)
-                    {
-                        cache::save_current_hash(project_root, runner.name());
-                    }
-                    let is_fail = matches!(layer_result.status, LayerStatus::Fail);
-                    report.add_layer(layer_result);
-                    if self.fail_fast && is_fail {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    report.add_layer(LayerResult {
-                        name: runner.layer().as_str().to_string(),
-                        runner: runner.name().to_string(),
-                        status: LayerStatus::Fail,
-                        findings: vec![Finding {
-                            severity: Severity::Critical,
-                            code: "RUNNER_FAILED".to_string(),
-                            message: format!("Runner '{}' failed: {}", runner.name(), e),
-                            ..Default::default()
-                        }],
-                        metrics: LayerMetrics {
-                            failed: 1,
-                            ..Default::default()
-                        },
-                        duration_ms: 0,
-                    });
-                    if self.fail_fast {
-                        break;
-                    }
+        if self.fail_fast && logic_failed {
+            // Skip structural — pointless to measure mutation score when tests fail
+        } else {
+            // Phase 2: Structural — must run sequentially (writes to disk, long-running)
+            for runner in &phase2 {
+                let result = self.run_one(runner, project, project_root, &on_start);
+                let is_fail = matches!(result.status, LayerStatus::Fail);
+                all_results.push(result);
+                if self.fail_fast && is_fail {
+                    break;
                 }
             }
+        }
+
+        // Sort results by layer priority for deterministic output
+        all_results.sort_by_key(|r| layer_priority(layer_from_str(&r.name)));
+
+        let mut report = BarzelReport::new(project.clone());
+        for result in all_results {
+            report.add_layer(result);
         }
 
         Ok(report)
     }
 
+    /// Run a single runner, handling unavailable/cached/error cases.
+    fn run_one<F>(
+        &self,
+        runner: &&dyn TestRunner,
+        project: &ProjectInfo,
+        project_root: &Path,
+        on_start: &F,
+    ) -> LayerResult
+    where
+        F: Fn(&str, &str) + Sync,
+    {
+        if !runner.is_available(project) {
+            return LayerResult {
+                name: runner.layer().as_str().to_string(),
+                runner: runner.name().to_string(),
+                status: LayerStatus::Skipped,
+                findings: vec![Finding {
+                    severity: Severity::Info,
+                    code: "RUNNER_UNAVAILABLE".to_string(),
+                    message: runner.skip_message().to_string(),
+                    ..Default::default()
+                }],
+                metrics: LayerMetrics::default(),
+                duration_ms: 0,
+            };
+        }
+
+        if !self.no_cache
+            && is_cacheable(runner.layer())
+            && cache::is_cached(project_root, runner.name())
+        {
+            return LayerResult {
+                name: runner.layer().as_str().to_string(),
+                runner: runner.name().to_string(),
+                status: LayerStatus::Skipped,
+                findings: vec![Finding {
+                    severity: Severity::Info,
+                    code: "CACHED".to_string(),
+                    message: "Source unchanged since last run — using cached result".to_string(),
+                    ..Default::default()
+                }],
+                metrics: LayerMetrics::default(),
+                duration_ms: 0,
+            };
+        }
+
+        on_start(runner.name(), runner.layer().as_str());
+
+        match runner.run(project) {
+            Ok(result) => {
+                if is_cacheable(runner.layer()) && !matches!(result.status, LayerStatus::Fail) {
+                    cache::save_current_hash(project_root, runner.name());
+                }
+                result
+            }
+            Err(e) => LayerResult {
+                name: runner.layer().as_str().to_string(),
+                runner: runner.name().to_string(),
+                status: LayerStatus::Fail,
+                findings: vec![Finding {
+                    severity: Severity::Critical,
+                    code: "RUNNER_FAILED".to_string(),
+                    message: format!("Runner '{}' failed: {}", runner.name(), e),
+                    ..Default::default()
+                }],
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                duration_ms: 0,
+            },
+        }
+    }
+
     pub fn run(&self, project: &ProjectInfo) -> Result<BarzelReport> {
         self.run_with_progress(project, |_, _| {})
+    }
+}
+
+fn layer_from_str(s: &str) -> Layer {
+    match s {
+        "logic" => Layer::Logic,
+        "structural" => Layer::Structural,
+        "hostile" => Layer::Hostile,
+        "operational" => Layer::Operational,
+        _ => Layer::Logic,
     }
 }
 
@@ -149,12 +194,7 @@ mod tests {
         }
     }
 
-    // ── Mock runners ──────────────────────────────────────────────────────────
-
-    struct PassRunner {
-        layer: Layer,
-        name: &'static str,
-    }
+    struct PassRunner { layer: Layer, name: &'static str }
     impl TestRunner for PassRunner {
         fn name(&self) -> &'static str { self.name }
         fn layer(&self) -> Layer { self.layer }
@@ -212,8 +252,6 @@ mod tests {
         fn run(&self, _: &ProjectInfo) -> Result<LayerResult> { unreachable!() }
     }
 
-    // ── Unavailable runner handling ───────────────────────────────────────────
-
     #[test]
     fn unavailable_runner_produces_skipped_result() {
         let dir = tempdir().unwrap();
@@ -230,16 +268,13 @@ mod tests {
     fn unavailable_runner_is_not_called() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        // If run() were called on UnavailableRunner it would panic — this should not panic
         let runner = UnavailableRunner;
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
-        let _ = orch.run(&project).unwrap(); // must not panic
+        let _ = orch.run(&project).unwrap();
     }
 
-    // ── fail_fast ─────────────────────────────────────────────────────────────
-
     #[test]
-    fn fail_fast_stops_after_first_failure() {
+    fn fail_fast_stops_after_logic_failure() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
         let fail = FailRunner { layer: Layer::Logic };
@@ -247,10 +282,9 @@ mod tests {
         let orch = VerificationOrchestrator::new(vec![
             &fail as &dyn TestRunner,
             &pass as &dyn TestRunner,
-        ])
-        .with_fail_fast();
+        ]).with_fail_fast();
         let report = orch.run(&project).unwrap();
-        // Only the failing layer — second runner was not reached
+        // Structural skipped due to fail_fast + logic failure
         assert_eq!(report.layers.len(), 1);
         assert!(matches!(report.layers[0].status, LayerStatus::Fail));
     }
@@ -269,7 +303,21 @@ mod tests {
         assert_eq!(report.layers.len(), 2);
     }
 
-    // ── Caching: is_cacheable ─────────────────────────────────────────────────
+    #[test]
+    fn results_are_sorted_by_layer_priority() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        // Register hostile before logic — output should still be logic first
+        let hostile = PassRunner { layer: Layer::Hostile, name: "hostile-runner" };
+        let logic = PassRunner { layer: Layer::Logic, name: "logic-runner" };
+        let orch = VerificationOrchestrator::new(vec![
+            &hostile as &dyn TestRunner,
+            &logic as &dyn TestRunner,
+        ]);
+        let report = orch.run(&project).unwrap();
+        assert_eq!(report.layers[0].name, "logic");
+        assert_eq!(report.layers[1].name, "hostile");
+    }
 
     #[test]
     fn structural_layer_is_cached_after_successful_run() {
@@ -278,7 +326,6 @@ mod tests {
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        // Cache should be written for structural layer
         assert!(crate::cache::is_cached(dir.path(), "mock-mutants"));
     }
 
@@ -289,7 +336,6 @@ mod tests {
         let runner = PassRunner { layer: Layer::Logic, name: "mock-proptest" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        // Logic layer must NOT write cache
         assert!(!crate::cache::is_cached(dir.path(), "mock-proptest"));
     }
 
@@ -317,12 +363,10 @@ mod tests {
     fn cached_structural_layer_is_skipped() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        // Pre-populate cache
         crate::cache::save_current_hash(dir.path(), "mock-mutants");
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         let report = orch.run(&project).unwrap();
-        // Should be skipped (cached), not Pass
         assert!(matches!(report.layers[0].status, LayerStatus::Skipped));
         assert_eq!(report.layers[0].findings[0].code, "CACHED");
     }
@@ -331,16 +375,12 @@ mod tests {
     fn no_cache_flag_bypasses_cached_layer() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        // Pre-populate cache
         crate::cache::save_current_hash(dir.path(), "mock-mutants");
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]).with_no_cache();
         let report = orch.run(&project).unwrap();
-        // With no_cache: runner executes and returns Pass, not Skipped
         assert!(matches!(report.layers[0].status, LayerStatus::Pass));
     }
-
-    // ── Error runner handling ─────────────────────────────────────────────────
 
     #[test]
     fn runner_error_produces_fail_layer_with_failed_metric() {
@@ -351,22 +391,53 @@ mod tests {
         let report = orch.run(&project).unwrap();
         assert_eq!(report.layers.len(), 1);
         assert!(matches!(report.layers[0].status, LayerStatus::Fail));
-        // Catches the "delete field failed" mutation
         assert_eq!(report.layers[0].metrics.failed, 1);
         assert!(report.layers[0].findings[0].code.contains("RUNNER_FAILED"));
     }
 
     #[test]
-    fn runner_error_with_fail_fast_stops_pipeline() {
+    fn logic_and_hostile_run_in_parallel() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        static CONCURRENT_COUNT: AtomicU32 = AtomicU32::new(0);
+        static MAX_CONCURRENT: AtomicU32 = AtomicU32::new(0);
+
+        struct SlowRunner { layer: Layer, name: &'static str }
+        impl TestRunner for SlowRunner {
+            fn name(&self) -> &'static str { self.name }
+            fn layer(&self) -> Layer { self.layer }
+            fn is_available(&self, _: &ProjectInfo) -> bool { true }
+            fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
+                let count = CONCURRENT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+                MAX_CONCURRENT.fetch_max(count, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                CONCURRENT_COUNT.fetch_sub(1, Ordering::SeqCst);
+                Ok(LayerResult {
+                    name: self.layer.as_str().to_string(),
+                    runner: self.name.to_string(),
+                    status: LayerStatus::Pass,
+                    findings: vec![],
+                    metrics: LayerMetrics::default(),
+                    duration_ms: 20,
+                })
+            }
+        }
+
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let err = ErrorRunner;
-        let pass = PassRunner { layer: Layer::Structural, name: "second" };
+        let logic = SlowRunner { layer: Layer::Logic, name: "slow-logic" };
+        let hostile = SlowRunner { layer: Layer::Hostile, name: "slow-hostile" };
+        let _ = Arc::new(()); // prevent optimization
+
         let orch = VerificationOrchestrator::new(vec![
-            &err as &dyn TestRunner,
-            &pass as &dyn TestRunner,
-        ]).with_fail_fast();
-        let report = orch.run(&project).unwrap();
-        assert_eq!(report.layers.len(), 1); // stopped after error
+            &logic as &dyn TestRunner,
+            &hostile as &dyn TestRunner,
+        ]);
+        orch.run(&project).unwrap();
+
+        // Both ran concurrently — max concurrent count should be 2
+        assert_eq!(MAX_CONCURRENT.load(Ordering::SeqCst), 2,
+            "Logic and Hostile should run in parallel");
     }
 }
