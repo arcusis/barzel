@@ -750,7 +750,10 @@ mod tests {
         let mut cfg = BarzelConfig::default();
         cfg.layers.operational = OperationalConfig { health_checks: vec![] };
 
-        let report = run_project_report(&project, &cfg, &None, false, false, true).unwrap();
+        // Filter to Operational layer only so no language runners (Semgrep etc.) are
+        // invoked — the test must not depend on external tool availability.
+        let layers = Some(vec!["operational".to_string()]);
+        let report = run_project_report(&project, &cfg, &layers, false, false, true).unwrap();
 
         let has_health_check_layer = report.layers.iter().any(|l| l.runner == "health-check");
         assert!(!has_health_check_layer,
