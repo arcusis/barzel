@@ -192,6 +192,16 @@ mod tests {
         }
     }
 
+    struct ErrorRunner;
+    impl TestRunner for ErrorRunner {
+        fn name(&self) -> &'static str { "error-runner" }
+        fn layer(&self) -> Layer { Layer::Logic }
+        fn is_available(&self, _: &ProjectInfo) -> bool { true }
+        fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
+            Err(crate::error::BarzelError::Detection("forced error".to_string()))
+        }
+    }
+
     struct UnavailableRunner;
     impl TestRunner for UnavailableRunner {
         fn name(&self) -> &'static str { "unavailable" }
@@ -327,5 +337,35 @@ mod tests {
         let report = orch.run(&project).unwrap();
         // With no_cache: runner executes and returns Pass, not Skipped
         assert!(matches!(report.layers[0].status, LayerStatus::Pass));
+    }
+
+    // ── Error runner handling ─────────────────────────────────────────────────
+
+    #[test]
+    fn runner_error_produces_fail_layer_with_failed_metric() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = ErrorRunner;
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+        let report = orch.run(&project).unwrap();
+        assert_eq!(report.layers.len(), 1);
+        assert!(matches!(report.layers[0].status, LayerStatus::Fail));
+        // Catches the "delete field failed" mutation
+        assert_eq!(report.layers[0].metrics.failed, 1);
+        assert!(report.layers[0].findings[0].code.contains("RUNNER_FAILED"));
+    }
+
+    #[test]
+    fn runner_error_with_fail_fast_stops_pipeline() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let err = ErrorRunner;
+        let pass = PassRunner { layer: Layer::Structural, name: "second" };
+        let orch = VerificationOrchestrator::new(vec![
+            &err as &dyn TestRunner,
+            &pass as &dyn TestRunner,
+        ]).with_fail_fast();
+        let report = orch.run(&project).unwrap();
+        assert_eq!(report.layers.len(), 1); // stopped after error
     }
 }

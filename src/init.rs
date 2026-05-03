@@ -54,3 +54,67 @@ pub fn run_init(target: Option<&Path>, stdio: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn init_creates_barzel_toml() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
+        run_init(Some(dir.path()), true).unwrap();
+        assert!(dir.path().join(".barzel.toml").exists());
+    }
+
+    #[test]
+    fn init_creates_barzel_directory() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
+        run_init(Some(dir.path()), true).unwrap();
+        assert!(dir.path().join(".barzel").exists());
+    }
+
+    #[test]
+    fn init_skips_if_toml_already_exists() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
+        // First init
+        run_init(Some(dir.path()), true).unwrap();
+        // Overwrite .barzel.toml with sentinel content
+        fs::write(dir.path().join(".barzel.toml"), b"# sentinel").unwrap();
+        // Second init should skip (not overwrite)
+        run_init(Some(dir.path()), true).unwrap();
+        let content = fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
+        assert!(content.contains("sentinel"));
+    }
+
+    #[test]
+    fn init_uses_current_dir_when_no_path() {
+        // This just checks it doesn't panic/error when path is None
+        // (it will use `.` which exists)
+        let result = run_init(None, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn init_works_for_typescript_project() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), br#"{"name":"my-app"}"#).unwrap();
+        run_init(Some(dir.path()), true).unwrap();
+        assert!(dir.path().join(".barzel.toml").exists());
+        let content = fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
+        assert!(content.contains("typescript") || content.contains("my-app"));
+    }
+
+    #[test]
+    fn init_toml_contains_project_name() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"my-crate\"").unwrap();
+        run_init(Some(dir.path()), true).unwrap();
+        let content = fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
+        assert!(content.contains("my-crate"));
+    }
+}
