@@ -41,7 +41,7 @@ impl TestRunner for GoTestRunner {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        match self.proc.run("go", &["test", "./...", "-json", "-count=1"], root) {
+        match self.proc.run("go", &["test", "./...", "-json", "-count=1", "-race"], root) {
             Ok(out) => {
                 let (passed, failed, panics) = parse_go_json_output(&out.stdout);
                 let total = passed + failed;
