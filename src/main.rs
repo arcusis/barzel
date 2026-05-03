@@ -13,6 +13,7 @@ mod process;
 mod report;
 mod run;
 mod runners;
+mod tool_registry;
 
 use chrono::Utc;
 use clap::Parser;
@@ -153,24 +154,9 @@ fn handle_stdio() -> ExitCode {
             let path = req.project_path.as_deref().map(Path::new);
             match detect::detect_project(path.unwrap_or_else(|| std::path::Path::new("."))) {
                 Ok(project) => {
-                    use crate::process::{OsProcessRunner, SubprocessRunner};
-                    let proc = OsProcessRunner;
-                    let tools = [
-                        ("cargo", vec!["--version"], "core"),
-                        ("cargo mutants", vec!["mutants", "--version"], "structural"),
-                        ("semgrep", vec!["--version"], "hostile"),
-                        ("pytest", vec!["--version"], "logic"),
-                        ("mypy", vec!["--version"], "logic"),
-                        ("mutmut", vec!["--version"], "structural"),
-                        ("bandit", vec!["--version"], "hostile"),
-                        ("node", vec!["--version"], "core"),
-                        ("go", vec!["version"], "core"),
-                    ];
-                    let tool_status: Vec<serde_json::Value> = tools.iter().map(|(name, args, layer)| {
-                        let first = name.split_whitespace().next().unwrap_or(name);
-                        let available = proc.is_available(first, args);
-                        serde_json::json!({ "name": name, "layer": layer, "available": available })
-                    }).collect();
+                    use crate::process::OsProcessRunner;
+                    let statuses = tool_registry::probe_all(&OsProcessRunner);
+                    let tool_json = tool_registry::tool_statuses_to_json(&statuses);
 
                     let resp = create_response("success", request_id, Some(serde_json::json!({
                         "language": project.language.to_string(),
@@ -179,7 +165,7 @@ fn handle_stdio() -> ExitCode {
                             "has_ai_deps": project.frameworks.has_ai_deps,
                             "ai_frameworks": project.frameworks.ai_frameworks,
                         },
-                        "tools": tool_status,
+                        "tools": tool_json,
                     })), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
                     ExitCode::SUCCESS
@@ -538,11 +524,10 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
 
 fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     use crate::detect::detect_project;
-    use crate::process::{OsProcessRunner, SubprocessRunner};
+    use crate::process::OsProcessRunner;
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
     let project = detect_project(target)?;
-    let proc = OsProcessRunner;
 
     println!(
         "{} Barzel tool check — {} project",
@@ -551,63 +536,31 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     );
     println!();
 
-    struct Tool {
-        name: &'static str,
-        check_args: &'static [&'static str],
-        layer: &'static str,
-        install: &'static str,
-    }
+    let statuses = tool_registry::probe_all(&OsProcessRunner);
+    let mut missing_count = 0usize;
 
-    let tools: &[Tool] = &[
-        // Rust toolchain
-        Tool { name: "cargo", check_args: &["--version"], layer: "core", install: "https://rustup.rs" },
-        Tool { name: "cargo kani", check_args: &["kani", "--version"], layer: "logic", install: "cargo install --locked kani-verifier" },
-        Tool { name: "cargo mutants", check_args: &["mutants", "--version"], layer: "structural", install: "cargo install cargo-mutants" },
-        Tool { name: "cargo fuzz", check_args: &["fuzz", "--version"], layer: "hostile", install: "cargo install cargo-fuzz" },
-        // Python toolchain
-        Tool { name: "pytest", check_args: &["--version"], layer: "logic", install: "pip install pytest" },
-        Tool { name: "mypy", check_args: &["--version"], layer: "logic", install: "pip install mypy" },
-        Tool { name: "mutmut", check_args: &["--version"], layer: "structural", install: "pip install mutmut" },
-        Tool { name: "bandit", check_args: &["--version"], layer: "hostile", install: "pip install bandit" },
-        // TypeScript/Node.js toolchain
-        Tool { name: "node", check_args: &["--version"], layer: "core", install: "https://nodejs.org" },
-        Tool { name: "npx", check_args: &["--version"], layer: "core", install: "https://nodejs.org" },
-        // (jest/vitest/tsc/eslint are checked via node_modules/.bin — no global install needed)
-        // Cross-language SAST
-        Tool { name: "semgrep", check_args: &["--version"], layer: "hostile", install: "pip install semgrep  OR  brew install semgrep" },
-        // Dependency vulnerability scanners — update this list when adding new audit runners
-        Tool { name: "cargo audit", check_args: &["audit", "--version"], layer: "hostile", install: "cargo install cargo-audit" },
-        Tool { name: "pip-audit", check_args: &["--version"], layer: "hostile", install: "pip install pip-audit" },
-        // (npm-audit uses npm which is already listed above)
-        // Go toolchain
-        Tool { name: "go", check_args: &["version"], layer: "core", install: "https://go.dev/dl" },
-    ];
-
-    let mut missing = Vec::new();
-    for tool in tools {
-        let first_word = tool.name.split_whitespace().next().unwrap_or(tool.name);
-        let available = proc.is_available(first_word, tool.check_args);
-        let icon = if available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
+    for s in &statuses {
+        let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
         println!(
             "  {} {:<20} [{:<12}]{}",
             icon,
-            tool.name,
-            tool.layer,
-            if available { String::new() } else { format!("  install: {}", tool.install.dimmed()) }
+            s.name,
+            s.layer,
+            if s.available { String::new() } else { format!("  install: {}", s.install.dimmed()) }
         );
-        if !available {
-            missing.push(tool);
+        if !s.available {
+            missing_count += 1;
         }
     }
 
     println!();
-    if missing.is_empty() {
+    if missing_count == 0 {
         println!("{} All tools available — run `barzel run` to start verification.", "✓".bright_green());
     } else {
         println!(
             "{} {} tool(s) missing. Install them to enable the corresponding layers.",
             "!".yellow(),
-            missing.len()
+            missing_count
         );
     }
 
@@ -897,5 +850,58 @@ mod tests {
         let report = base_report();
         let payload = build_run_data(&report);
         assert!(payload.get("diff_mode").is_none(), "diff_mode must be absent when --since not used");
+    }
+
+    // ── tool registry / check payload ─────────────────────────────────────────
+
+    #[test]
+    fn stdio_check_tool_json_includes_install_guidance() {
+        use crate::process::MockProcessRunner;
+        // All tools spawn-fail — every JSON entry must still carry install guidance.
+        let statuses = tool_registry::probe_all(&MockProcessRunner::unavailable());
+        let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+
+        for entry in &tool_json {
+            let install = entry["install"].as_str().unwrap_or("");
+            assert!(!install.is_empty(),
+                "tool '{}' must have install guidance in stdio payload",
+                entry["name"].as_str().unwrap_or("?"));
+        }
+    }
+
+    #[test]
+    fn tool_statuses_to_json_produces_correct_shape() {
+        // Verify the shared helper produces all four required fields.
+        use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
+        let statuses = vec![
+            ToolStatus { name: "cargo", layer: "core", available: true,  install: "https://rustup.rs" },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep" },
+        ];
+        let json = tool_statuses_to_json(&statuses);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["name"].as_str(), Some("cargo"));
+        assert_eq!(json[0]["layer"].as_str(), Some("core"));
+        assert_eq!(json[0]["available"].as_bool(), Some(true));
+        assert_eq!(json[0]["install"].as_str(), Some("https://rustup.rs"));
+        assert_eq!(json[1]["available"].as_bool(), Some(false));
+        // stdio and human paths both call tool_statuses_to_json — drift is structurally
+        // impossible as long as both go through this helper.
+    }
+
+    #[test]
+    fn stdio_check_tool_json_contains_expected_tools() {
+        use crate::process::MockProcessRunner;
+        let statuses = tool_registry::probe_all(&MockProcessRunner::passing("ok"));
+        let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+        let names: Vec<&str> = tool_json.iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        assert!(names.contains(&"go-mutesting"), "go-mutesting must be in stdio payload");
+        assert!(names.contains(&"cargo audit"),  "cargo audit must be in stdio payload");
+        assert!(names.contains(&"pip-audit"),    "pip-audit must be in stdio payload");
+        assert!(names.contains(&"semgrep"),      "semgrep must be in stdio payload");
+        assert!(names.contains(&"npm"),  "npm must be in stdio payload (backs npm audit)");
+        assert!(names.contains(&"pnpm"), "pnpm must be in stdio payload (backs pnpm audit)");
+        assert!(names.contains(&"yarn"), "yarn must be in stdio payload (backs yarn audit)");
     }
 }
