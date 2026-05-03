@@ -16,6 +16,19 @@ pub struct BarzelReport {
     /// Minimum severity from config that triggers a non-zero exit: critical | high | medium | any
     #[serde(default = "default_fail_on")]
     pub fail_on: String,
+    /// Per-package reports for workspace/monorepo projects (empty for single-project)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_members: Vec<WorkspaceMemberReport>,
+}
+
+/// Package-level report nested inside a workspace aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMemberReport {
+    pub package_path: String,
+    pub language: String,
+    pub status: ReportStatus,
+    pub layers: Vec<LayerResult>,
+    pub summary: Summary,
 }
 
 fn default_fail_on() -> String { "high".to_string() }
@@ -123,6 +136,7 @@ impl BarzelReport {
             },
             status: ReportStatus::Pass,
             fail_on: "high".to_string(),
+            workspace_members: Vec::new(),
         }
     }
 

@@ -194,16 +194,34 @@ fn handle_stdio() -> ExitCode {
 /// Build the structured data payload an AI agent receives after `run`.
 fn build_run_data(report: &BarzelReport) -> serde_json::Value {
     let passed = matches!(report.status, ReportStatus::Pass);
+    let is_workspace = !report.workspace_members.is_empty();
 
-    // Flatten all non-info findings into a prioritised action list, sorted by priority
-    let mut action_items: Vec<serde_json::Value> = report
-        .layers
-        .iter()
-        .flat_map(|layer| {
+    // For workspaces: flatten action_items from per-package member reports with package context.
+    // For single projects: flatten from report.layers directly (unchanged behavior).
+    let mut action_items: Vec<serde_json::Value> = if is_workspace {
+        report.workspace_members.iter().flat_map(|member| {
+            member.layers.iter().flat_map(move |layer| {
+                layer.findings.iter().filter_map(move |f| {
+                    if matches!(f.severity, Severity::Info) { return None; }
+                    Some(serde_json::json!({
+                        "priority":     severity_priority(&f.severity),
+                        "package_path": member.package_path,
+                        "layer":        layer.name,
+                        "runner":       layer.runner,
+                        "severity":     f.severity,
+                        "code":         f.code,
+                        "message":      f.message,
+                        "location":     f.location,
+                        "reproduce_cmd": f.reproduce_cmd,
+                        "suggestion":   f.suggestion,
+                    }))
+                })
+            })
+        }).collect()
+    } else {
+        report.layers.iter().flat_map(|layer| {
             layer.findings.iter().filter_map(move |f| {
-                if matches!(f.severity, Severity::Info) {
-                    return None;
-                }
+                if matches!(f.severity, Severity::Info) { return None; }
                 Some(serde_json::json!({
                     "priority": severity_priority(&f.severity),
                     "layer":    layer.name,
@@ -216,15 +234,13 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
                     "suggestion":    f.suggestion,
                 }))
             })
-        })
-        .collect();
+        }).collect()
+    };
     action_items.sort_by_key(|v| v["priority"].as_u64().unwrap_or(99));
 
-    // Per-layer summary with full findings for agent consumption
-    let layers: Vec<serde_json::Value> = report
-        .layers
-        .iter()
-        .map(|l| {
+    // Per-layer summary for quick agent parsing
+    let layers_json = |layers: &[crate::report::LayerResult]| -> Vec<serde_json::Value> {
+        layers.iter().map(|l| {
             let findings: Vec<serde_json::Value> = l.findings.iter().map(|f| serde_json::json!({
                 "severity":     f.severity,
                 "code":         f.code,
@@ -244,10 +260,29 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
                 "duration_ms": l.duration_ms,
                 "findings": findings,
             })
-        })
-        .collect();
+        }).collect()
+    };
 
-    serde_json::json!({
+    // For workspaces, expose per-package structure; for single projects, flat layers list
+    let workspace_json: Vec<serde_json::Value> = report.workspace_members.iter().map(|m| {
+        serde_json::json!({
+            "package_path":    m.package_path,
+            "language":        m.language,
+            "status":          m.status,
+            "summary": {
+                "total_findings": m.summary.total_findings,
+                "critical":       m.summary.critical,
+                "high":           m.summary.high,
+                "medium":         m.summary.medium,
+                "low":            m.summary.low,
+                "overall_status": m.summary.overall_status,
+            },
+            "layers": layers_json(&m.layers),
+        })
+    }).collect();
+
+    // Always include top-level layers (aggregate) — agents always expect data.layers
+    let mut payload = serde_json::json!({
         "passed":          passed,
         "overall_status":  report.status,
         "total_findings":  report.summary.total_findings,
@@ -255,11 +290,18 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
         "high":            report.summary.high,
         "medium":          report.summary.medium,
         "low":             report.summary.low,
-        "layers":          layers,
+        "layers":          layers_json(&report.layers),
         "action_items":    action_items,
         "report_id":       report.id,
         "timestamp":       report.timestamp,
-    })
+    });
+
+    if is_workspace {
+        payload["is_workspace"] = serde_json::Value::Bool(true);
+        payload["packages"] = serde_json::Value::Array(workspace_json);
+    }
+
+    payload
 }
 
 fn severity_priority(s: &Severity) -> u8 {
