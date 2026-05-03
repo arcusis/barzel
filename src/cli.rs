@@ -39,6 +39,10 @@ pub enum Commands {
         /// Stop on first critical finding
         #[arg(long)]
         fail_fast: bool,
+
+        /// Output the full JSON report to stdout (for scripting)
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show the last report or a specific report

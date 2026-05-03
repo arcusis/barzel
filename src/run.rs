@@ -32,6 +32,7 @@ pub fn run_verification(
     no_cache: bool,
     fail_fast: bool,
     stdio: bool,
+    json_out: bool,
 ) -> Result<BarzelReport> {
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let project = detect_project(target_path)?;
@@ -125,7 +126,11 @@ pub fn run_verification(
     // Apply fail_on threshold from config — overrides report's internal status
     report.fail_on = cfg.reporting.fail_on.clone();
 
-    if !stdio {
+    if json_out {
+        // --json: dump the raw report as compact JSON, nothing else
+        println!("{}", serde_json::to_string(&report).unwrap_or_default());
+        report.save(target_path)?;
+    } else if !stdio {
         print_human_report(&report);
         report.save(target_path)?;
 
@@ -161,11 +166,12 @@ fn print_human_report(report: &BarzelReport) {
         let detail = match layer.status {
             LayerStatus::Pass => {
                 let m = &layer.metrics;
-                if m.tests_run > 0 {
-                    format!("{} tests · {}ms", m.tests_run, layer.duration_ms)
-                } else {
-                    format!("{}ms", layer.duration_ms)
-                }
+                let mut parts = Vec::new();
+                if m.tests_run > 0 { parts.push(format!("{} tests", m.tests_run)); }
+                if let Some(cov) = m.coverage { parts.push(format!("{cov:.0}% cov")); }
+                if let Some(ms) = Some(m.mutation_score).flatten() { parts.push(format!("{ms:.0}% mut")); }
+                parts.push(format!("{}ms", layer.duration_ms));
+                parts.join(" · ")
             }
             LayerStatus::Skipped => layer
                 .findings
