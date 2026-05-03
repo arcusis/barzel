@@ -656,11 +656,11 @@ mod tests {
     fn comparison_from_saved_reports() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
-        let mut baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+        let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
             finding("SQL_INJECTION", Severity::Critical, "src/app.py:10"),
         ])]);
         baseline.save(dir.path()).unwrap();
-        let mut head = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
+        let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
         head.save(dir.path()).unwrap();
         let lb = BarzelReport::load_by_id(dir.path(), &baseline.id).unwrap().unwrap();
         let lh = BarzelReport::load_by_id(dir.path(), &head.id).unwrap().unwrap();

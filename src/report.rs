@@ -473,15 +473,15 @@ mod tests {
         // Two reports with the same filename-second but different subsecond timestamps.
         // load_latest must return the one with the greater DateTime, not the one
         // that sorts later by filename.
-        use chrono::Duration;
+        use chrono::{Duration, TimeZone};
         let dir = tempfile::tempdir().unwrap();
 
         let mut older = BarzelReport::new(dummy_project());
         let mut newer = BarzelReport::new(dummy_project());
 
-        // Give the "newer" report a timestamp 500ms later but the same wall-clock second,
-        // so filename ordering could disagree with timestamp ordering.
-        let base_time = older.timestamp;
+        // Use a fixed timestamp with nanos=0 so base_time + 500ms is deterministically
+        // in the same filename-second regardless of when the test runs.
+        let base_time = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
         older.timestamp = base_time;
         newer.timestamp = base_time + Duration::milliseconds(500);
 
@@ -524,7 +524,7 @@ mod tests {
     fn same_second_reports_get_distinct_filenames() {
         // Force identical timestamps so the test deterministically exercises the collision case.
         let dir = tempfile::tempdir().unwrap();
-        let mut r1 = BarzelReport::new(dummy_project());
+        let r1 = BarzelReport::new(dummy_project());
         let mut r2 = BarzelReport::new(dummy_project());
         r2.timestamp = r1.timestamp; // same second, different IDs
         let p1 = r1.save(dir.path()).unwrap();
