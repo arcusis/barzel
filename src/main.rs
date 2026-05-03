@@ -1,5 +1,6 @@
 mod cache;
 mod cli;
+mod compare;
 mod config;
 mod detect;
 mod diff;
@@ -440,6 +441,98 @@ fn cmd_report(id: Option<String>) -> error::Result<()> {
     Ok(())
 }
 
+// ── Compare command ───────────────────────────────────────────────────────────
+
+fn load_report_by_ref(base: &Path, id_ref: &str) -> error::Result<BarzelReport> {
+    let report = if id_ref == "latest" {
+        BarzelReport::load_latest(base)?
+    } else {
+        BarzelReport::load_by_id(base, id_ref)?
+    };
+    report.ok_or_else(|| crate::error::BarzelError::Detection(format!("report not found: {}", id_ref)))
+}
+
+fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Result<()> {
+    let base = Path::new(".");
+    let baseline = load_report_by_ref(base, baseline_ref)?;
+    let head = load_report_by_ref(base, head_ref)?;
+
+    let cmp = compare::compare_reports(&baseline, &head);
+
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&cmp).unwrap_or_default());
+        return Ok(());
+    }
+
+    // Human output
+    let verdict_str = match cmp.verdict {
+        compare::Verdict::Regressed => "REGRESSED".bright_red().to_string(),
+        compare::Verdict::Improved  => "IMPROVED".bright_green().to_string(),
+        compare::Verdict::Unchanged => "UNCHANGED".dimmed().to_string(),
+    };
+
+    println!(
+        "{} Compare {} → {}  {}",
+        "→".bright_blue(),
+        (&cmp.baseline_id[..8.min(cmp.baseline_id.len())]).dimmed(),
+        (&cmp.head_id[..8.min(cmp.head_id.len())]).dimmed(),
+        verdict_str
+    );
+    println!(
+        "   baseline: {}  head: {}",
+        cmp.baseline_timestamp.format("%Y-%m-%d %H:%M UTC"),
+        cmp.head_timestamp.format("%Y-%m-%d %H:%M UTC")
+    );
+
+    let d = &cmp.summary_delta;
+    println!(
+        "   findings: {:+} total  ({:+} critical  {:+} high  {:+} medium  {:+} low)",
+        d.total, d.critical, d.high, d.medium, d.low
+    );
+    println!();
+
+    if !cmp.regressions.is_empty() {
+        println!("  {} Regressions ({})", "✗".bright_red(), cmp.regressions.len());
+        for r in &cmp.regressions {
+            match r {
+                compare::Regression::StatusWorsened { layer, runner, from, to } =>
+                    println!("    {} [{}/{}] {:?} → {:?}", "↓".bright_red(), layer, runner, from, to),
+                compare::Regression::NewFinding { layer, runner, code, severity, message, location } => {
+                    let sev = format!("[{:?}]", severity).bright_red().to_string();
+                    println!("    {} {} [{}/{}] {} — {}", "↓".bright_red(), sev, layer, runner, code, message);
+                    if let Some(loc) = location {
+                        println!("        at {}", loc.dimmed());
+                    }
+                }
+                compare::Regression::CoverageDrop { layer, runner, from, to, .. } =>
+                    println!("    {} [coverage/{}/{}] {:.1}% → {:.1}%", "↓".bright_red(), layer, runner, from, to),
+                compare::Regression::MutationScoreDrop { layer, runner, from, to, .. } =>
+                    println!("    {} [mutation/{}/{}] {:.1}% → {:.1}%", "↓".bright_red(), layer, runner, from, to),
+            }
+        }
+        println!();
+    }
+
+    if !cmp.improvements.is_empty() {
+        println!("  {} Improvements ({})", "✓".bright_green(), cmp.improvements.len());
+        for i in &cmp.improvements {
+            match i {
+                compare::Improvement::StatusImproved { layer, runner, from, to } =>
+                    println!("    {} [{}/{}] {:?} → {:?}", "↑".bright_green(), layer, runner, from, to),
+                compare::Improvement::FindingResolved { layer, runner, code, severity, .. } =>
+                    println!("    {} [{:?}] [{}/{}] {} resolved", "↑".bright_green(), severity, layer, runner, code),
+                compare::Improvement::CoverageImproved { layer, runner, from, to, .. } =>
+                    println!("    {} [coverage/{}/{}] {:.1}% → {:.1}%", "↑".bright_green(), layer, runner, from, to),
+                compare::Improvement::MutationScoreImproved { layer, runner, from, to, .. } =>
+                    println!("    {} [mutation/{}/{}] {:.1}% → {:.1}%", "↑".bright_green(), layer, runner, from, to),
+            }
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
 // ── Check command ─────────────────────────────────────────────────────────────
 
 fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
@@ -575,13 +668,20 @@ fn main() -> ExitCode {
             }
         }
 
-        Commands::Report { id } => match cmd_report(id) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("{} {}", "Error:".bright_red(), e);
-                ExitCode::from(1)
+        Commands::Report { id, compare, json } => {
+            let result = if let Some(ids) = compare {
+                cmd_compare(&ids[0], &ids[1], json)
+            } else {
+                cmd_report(id)
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".bright_red(), e);
+                    ExitCode::from(1)
+                }
             }
-        },
+        }
 
         Commands::Check { path } => match cmd_check(path.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,

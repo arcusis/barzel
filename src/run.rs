@@ -510,7 +510,7 @@ fn make_spinner() -> ProgressBar {
 mod tests {
     use super::*;
     use crate::detect::{Language, ProjectFrameworks};
-    use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, ReportStatus, Severity};
+    use crate::report::{LayerMetrics, LayerResult, LayerStatus, ReportStatus, Severity};
 
     fn logic_layer_with_coverage(runner: &str, coverage: f64, status: LayerStatus) -> LayerResult {
         LayerResult {

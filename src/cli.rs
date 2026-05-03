@@ -51,10 +51,19 @@ pub enum Commands {
         since: Option<String>,
     },
 
-    /// Show the last report or a specific report
+    /// Show the last report or a specific report; compare two reports for regressions
     Report {
         /// Report ID prefix or "latest" (default: latest)
         id: Option<String>,
+
+        /// Compare two reports: --compare <baseline-id> <head-id>
+        /// IDs may be prefixes or "latest". Outputs regression/improvement summary.
+        #[arg(long, num_args = 2, value_names = ["BASELINE", "HEAD"])]
+        compare: Option<Vec<String>>,
+
+        /// Output compare result as JSON (only used with --compare)
+        #[arg(long)]
+        json: bool,
     },
 
     /// Check which tools are installed and what runners are available
