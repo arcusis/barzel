@@ -213,7 +213,8 @@ impl BarzelReport {
         let reports_dir = base_dir.join(".barzel").join("reports");
         std::fs::create_dir_all(&reports_dir)?;
 
-        let filename = format!("report-{}-{}.json", self.timestamp.format("%Y%m%d-%H%M%S"), &self.id[..8]);
+        let id_prefix = self.id.get(..8).unwrap_or(&self.id);
+        let filename = format!("report-{}-{}.json", self.timestamp.format("%Y%m%d-%H%M%S"), id_prefix);
         let path = reports_dir.join(filename);
 
         let content = serde_json::to_string_pretty(self)?;
@@ -481,6 +482,32 @@ mod tests {
         let _ = report.save(dir.path()).unwrap();
         let result = BarzelReport::load_by_id(dir.path(), "00000000").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn same_second_reports_get_distinct_filenames() {
+        // Two reports with the same timestamp-second must produce different filenames
+        // because the ID is included in the filename.
+        let dir = tempfile::tempdir().unwrap();
+        let r1 = BarzelReport::new(dummy_project());
+        let r2 = BarzelReport::new(dummy_project());
+        let p1 = r1.save(dir.path()).unwrap();
+        let p2 = r2.save(dir.path()).unwrap();
+        assert_ne!(p1, p2, "two reports must not share the same filename");
+        // Both are loadable by ID
+        assert!(BarzelReport::load_by_id(dir.path(), &r1.id).unwrap().is_some());
+        assert!(BarzelReport::load_by_id(dir.path(), &r2.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn save_does_not_panic_on_short_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = BarzelReport::new(dummy_project());
+        report.id = "ab".to_string(); // shorter than 8 chars
+        let path = report.save(dir.path()).unwrap();
+        assert!(path.exists());
+        // Filename contains the full short id, not a slice
+        assert!(path.to_string_lossy().contains("ab"));
     }
 
     proptest! {

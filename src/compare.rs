@@ -2,8 +2,10 @@
 ///
 /// Finding identity is `(severity, code, location, message)` — codes alone repeat
 /// across files, so location disambiguates the same issue class at different sites.
-/// Skipped layers are conservative: only treated as regressions when they replace
-/// a previously non-skipped failing layer.
+/// Skipped is treated as neutral in both directions: transitioning to Skipped is
+/// never a regression (runner became non-applicable) and never an improvement
+/// (a missing runner is not progress). Transitioning from Skipped is similarly
+/// ignored to avoid false improvements when a runner starts running again.
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,7 +29,8 @@ fn status_worsened(from: LayerStatus, to: LayerStatus) -> bool {
 }
 
 fn status_improved(from: LayerStatus, to: LayerStatus) -> bool {
-    if from == LayerStatus::Skipped { return false; }
+    // Skipped is neutral in both directions
+    if from == LayerStatus::Skipped || to == LayerStatus::Skipped { return false; }
     status_rank(to) < status_rank(from)
 }
 
@@ -526,6 +529,25 @@ mod tests {
         let cmp = compare_reports(&baseline, &head);
         assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
             "Skipped must never be considered worse than Fail");
+    }
+
+    #[test]
+    fn fail_to_skipped_is_not_improvement() {
+        // Skipped means the runner became non-applicable, not that the problem was fixed.
+        let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![])]);
+        let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
+        let cmp = compare_reports(&baseline, &head);
+        assert!(!cmp.improvements.iter().any(|i| matches!(i, Improvement::StatusImproved { .. })),
+            "Fail → Skipped must not be counted as an improvement");
+    }
+
+    #[test]
+    fn partial_to_skipped_is_not_improvement() {
+        let baseline = make_report(vec![layer("logic", "pytest", LayerStatus::Partial, vec![])]);
+        let head = make_report(vec![layer("logic", "pytest", LayerStatus::Skipped, vec![])]);
+        let cmp = compare_reports(&baseline, &head);
+        assert!(!cmp.improvements.iter().any(|i| matches!(i, Improvement::StatusImproved { .. })),
+            "Partial → Skipped must not be counted as an improvement");
     }
 
     #[test]
