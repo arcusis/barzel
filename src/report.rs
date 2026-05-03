@@ -19,6 +19,15 @@ pub struct BarzelReport {
     /// Per-package reports for workspace/monorepo projects (empty for single-project)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_members: Vec<WorkspaceMemberReport>,
+    /// Git revision passed to --since (set whenever --since was used, even on fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_since: Option<String>,
+    /// Number of changed files detected in diff mode (absent when lookup failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_changed_files: Option<usize>,
+    /// Reason diff mode fell back to full run (absent when diff succeeded or not requested).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_fallback_reason: Option<String>,
 }
 
 /// Package-level report nested inside a workspace aggregate.
@@ -137,6 +146,9 @@ impl BarzelReport {
             status: ReportStatus::Pass,
             fail_on: "high".to_string(),
             workspace_members: Vec::new(),
+            diff_since: None,
+            diff_changed_files: None,
+            diff_fallback_reason: None,
         }
     }
 
