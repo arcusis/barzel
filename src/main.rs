@@ -127,7 +127,7 @@ fn handle_stdio() -> ExitCode {
 
         "run" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true) {
+            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true, false) {
                 Ok(report) => {
                     let exit_code = report_exit_code(&report);
                     let data = build_run_data(&report);
@@ -453,8 +453,8 @@ fn main() -> ExitCode {
             }
         },
 
-        Commands::Run { path, layer, no_cache, fail_fast } => {
-            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false) {
+        Commands::Run { path, layer, no_cache, fail_fast, json } => {
+            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false, json) {
                 Ok(report) => report_exit_code(&report),
                 Err(e) => {
                     eprintln!("{} {}", "Error:".bright_red(), e);
