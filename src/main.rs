@@ -6,6 +6,7 @@ mod error;
 mod init;
 mod orchestrator;
 mod plugin;
+mod process;
 mod report;
 mod run;
 mod runners;

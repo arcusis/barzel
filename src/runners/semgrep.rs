@@ -1,11 +1,20 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
-pub struct SemgrepRunner;
+pub struct SemgrepRunner {
+    proc: Arc<dyn SubprocessRunner>,
+}
+
+impl Default for SemgrepRunner {
+    fn default() -> Self {
+        Self { proc: Arc::new(OsProcessRunner) }
+    }
+}
 
 impl TestRunner for SemgrepRunner {
     fn name(&self) -> &'static str {
@@ -21,26 +30,16 @@ impl TestRunner for SemgrepRunner {
     }
 
     fn is_available(&self, _project: &ProjectInfo) -> bool {
-        Command::new("semgrep")
-            .args(["--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.proc.is_available("semgrep", &["--version"])
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
         let start = Instant::now();
-        let project_root = std::path::Path::new(&project.root);
+        let root = std::path::Path::new(&project.root);
 
-        let output = Command::new("semgrep")
-            .args(["--json", "--quiet", "--config", "auto", "."])
-            .current_dir(project_root)
-            .output();
-
-        match output {
-            Ok(result) => {
-                let output_str = String::from_utf8_lossy(&result.stdout);
-                let findings = parse_semgrep_json(&output_str);
+        match self.proc.run("semgrep", &["--json", "--quiet", "--config", "auto", "."], root) {
+            Ok(out) => {
+                let findings = parse_semgrep_json(&out.stdout);
 
                 let status = if findings
                     .iter()
@@ -156,7 +155,82 @@ fn map_semgrep_severity(s: &str) -> Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
+
+    fn info() -> ProjectInfo {
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
+    }
+
+    fn runner_with(mock: MockProcessRunner) -> SemgrepRunner {
+        SemgrepRunner { proc: Arc::new(mock) }
+    }
+
+    // ── metadata ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_semgrep() {
+        assert_eq!(SemgrepRunner::default().name(), "semgrep");
+    }
+
+    #[test]
+    fn layer_is_hostile() {
+        assert!(matches!(SemgrepRunner::default().layer(), Layer::Hostile));
+    }
+
+    #[test]
+    fn skip_message_mentions_semgrep() {
+        assert!(SemgrepRunner::default().skip_message().contains("semgrep"));
+    }
+
+    // ── is_available ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn available_when_command_succeeds() {
+        assert!(runner_with(MockProcessRunner::passing("semgrep 1.0")).is_available(&info()));
+    }
+
+    #[test]
+    fn not_available_when_command_fails() {
+        assert!(!runner_with(MockProcessRunner::unavailable()).is_available(&info()));
+    }
+
+    // ── run() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_with_no_findings() {
+        let result = runner_with(MockProcessRunner::passing(r#"{"results":[]}"#))
+            .run(&info())
+            .unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn run_returns_fail_on_critical_finding() {
+        let json = r#"{"results":[{"check_id":"sqli","path":"src/db.rs","start":{"line":1},"extra":{"severity":"ERROR","message":"SQL injection"}}]}"#;
+        let result = runner_with(MockProcessRunner::passing(json)).run(&info()).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings.len(), 1);
+        assert!(matches!(result.findings[0].severity, Severity::Critical));
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &std::path::Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "semgrep not found"))
+            }
+        }
+        let runner = SemgrepRunner { proc: Arc::new(BrokenProc) };
+        let result = runner.run(&info()).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+    }
+
+    // ── parse_semgrep_json ────────────────────────────────────────────────────
 
     #[test]
     fn empty_json_returns_no_findings() {

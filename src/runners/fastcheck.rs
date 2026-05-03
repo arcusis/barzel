@@ -1,12 +1,21 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use std::path::Path;
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
-pub struct FastCheckRunner;
+pub struct FastCheckRunner {
+    proc: Arc<dyn SubprocessRunner>,
+}
+
+impl Default for FastCheckRunner {
+    fn default() -> Self {
+        Self { proc: Arc::new(OsProcessRunner) }
+    }
+}
 
 impl TestRunner for FastCheckRunner {
     fn name(&self) -> &'static str {
@@ -38,22 +47,14 @@ impl TestRunner for FastCheckRunner {
         let pm = detect_package_manager(root);
         let test_cmd = detect_test_command(&pkg_json, root, pm);
 
-        let output = Command::new("sh")
-            .args(["-c", &test_cmd])
-            .current_dir(root)
-            .output();
+        match self.proc.run("sh", &["-c", &test_cmd], root) {
+            Ok(out) => {
+                let combined = out.combined();
 
-        match output {
-            Ok(result) => {
-                let stdout = String::from_utf8_lossy(&result.stdout);
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                let combined = format!("{}\n{}", stdout, stderr);
-
-                let passed = result.status.success();
-                let status = if passed { LayerStatus::Pass } else { LayerStatus::Fail };
+                let status = if out.success { LayerStatus::Pass } else { LayerStatus::Fail };
                 let (tests_run, tests_passed, tests_failed) = parse_ts_test_counts(&combined);
 
-                let findings = if passed {
+                let findings = if out.success {
                     vec![]
                 } else {
                     let failing_tests = extract_failing_tests(&combined);
@@ -181,7 +182,6 @@ fn extract_before_label(line: &str, label: &str) -> u64 {
 }
 
 fn extract_failing_tests(output: &str) -> Vec<String> {
-
     let mut tests = Vec::new();
     for line in output.lines() {
         let t = line.trim();
@@ -200,9 +200,98 @@ fn extract_failing_tests(output: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
-    use std::path::Path;
     use tempfile::tempdir;
+
+    fn ts_info(root: &str) -> ProjectInfo {
+        ProjectInfo { language: Language::TypeScript, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+    }
+
+    fn runner_with(mock: MockProcessRunner) -> FastCheckRunner {
+        FastCheckRunner { proc: Arc::new(mock) }
+    }
+
+    // ── metadata ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_fast_check() {
+        assert_eq!(FastCheckRunner::default().name(), "fast-check");
+    }
+
+    #[test]
+    fn layer_is_logic() {
+        assert!(matches!(FastCheckRunner::default().layer(), Layer::Logic));
+    }
+
+    #[test]
+    fn skip_message_mentions_fast_check() {
+        assert!(FastCheckRunner::default().skip_message().contains("fast-check"));
+    }
+
+    // ── is_available ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn not_available_for_rust() {
+        let dir = tempdir().unwrap();
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(!FastCheckRunner::default().is_available(&info));
+    }
+
+    #[test]
+    fn available_when_fast_check_in_package_json() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"fast-check":"3.0"}}"#).unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        assert!(FastCheckRunner::default().is_available(&info));
+    }
+
+    #[test]
+    fn not_available_when_fast_check_missing_from_package_json() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{}}"#).unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        assert!(!FastCheckRunner::default().is_available(&info));
+    }
+
+    // ── run() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_on_success() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"jest":"29"}}"#).unwrap();
+        let stdout = "Tests: 5 passed, 5 total";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn run_returns_fail_on_test_failure() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"jest":"29"}}"#).unwrap();
+        let stdout = "Tests: 3 passed, 2 failed, 5 total";
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "sh not found"))
+            }
+        }
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), b"{}").unwrap();
+        let runner = FastCheckRunner { proc: Arc::new(BrokenProc) };
+        let result = runner.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+    }
 
     // ── detect_package_manager ────────────────────────────────────────────────
 
