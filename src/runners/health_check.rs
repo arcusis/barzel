@@ -18,6 +18,13 @@ impl HealthCheckRunner {
     }
 }
 
+/// Wrap `s` in single quotes for POSIX shell safety in reproduce_cmd strings.
+/// URLs with query strings (`?key=val&other=val`) contain shell metacharacters
+/// that would be interpreted by a shell if left unquoted.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 impl TestRunner for HealthCheckRunner {
     fn name(&self) -> &'static str { "health-check" }
     fn layer(&self) -> Layer { Layer::Operational }
@@ -39,8 +46,8 @@ impl TestRunner for HealthCheckRunner {
         for check in &self.checks {
             let timeout_secs = check.timeout_ms as f64 / 1000.0;
             let reproduce_cmd = format!(
-                "curl -i --max-time {:.1} {}",
-                timeout_secs, check.url
+                "curl -i --max-time {:.1} {} 2>&1 | head -40",
+                timeout_secs, shell_quote(&check.url)
             );
 
             match self.client.get(&check.url, check.timeout_ms) {
@@ -86,10 +93,10 @@ impl TestRunner for HealthCheckRunner {
             }
         }
 
-        let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+        // Any health check failure (High or Critical) fails the Operational layer —
+        // a failing production-health assertion is never just a warning.
+        let status = if !findings.is_empty() {
             LayerStatus::Fail
-        } else if findings.iter().any(|f| matches!(f.severity, Severity::High)) {
-            LayerStatus::Partial
         } else {
             LayerStatus::Pass
         };
@@ -218,18 +225,45 @@ mod tests {
         let result = r.run(&project()).unwrap();
         let cmd = result.findings[0].reproduce_cmd.as_deref().unwrap();
         assert!(cmd.contains("curl"), "reproduce_cmd must use curl");
-        assert!(cmd.contains("http://localhost:3000/health"));
+        assert!(cmd.contains("localhost:3000"));
+        assert!(cmd.contains("2>&1 | head -40"), "reproduce_cmd must include output capture");
     }
 
     #[test]
-    fn status_mismatch_layer_is_partial() {
+    fn status_mismatch_layer_is_fail() {
+        // Health check failures always fail the Operational layer — a failing
+        // production assertion is never just a warning.
         let r = runner_with(
             vec![check("api", "http://localhost:3000/health")],
             MockHttpClient::always_ok(404),
         );
         let result = r.run(&project()).unwrap();
-        assert!(matches!(result.status, LayerStatus::Partial));
+        assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.metrics.failed, 1);
+    }
+
+    #[test]
+    fn url_with_query_string_is_shell_quoted_in_reproduce_cmd() {
+        let r = runner_with(
+            vec![check("api", "http://localhost:3000/health?ready=true&source=barzel")],
+            MockHttpClient::always_ok(503),
+        );
+        let result = r.run(&project()).unwrap();
+        let cmd = result.findings[0].reproduce_cmd.as_deref().unwrap();
+        // URL must be wrapped in single quotes so ? and & are not interpreted by shell
+        assert!(cmd.contains("'http://localhost:3000/health?ready=true&source=barzel'"),
+            "URL with query string must be single-quoted in reproduce_cmd");
+    }
+
+    #[test]
+    fn shell_quote_wraps_url_in_single_quotes() {
+        assert_eq!(shell_quote("http://localhost:3000/health"), "'http://localhost:3000/health'");
+    }
+
+    #[test]
+    fn shell_quote_handles_query_string_metacharacters() {
+        let quoted = shell_quote("http://localhost:3000/health?ready=true&source=barzel");
+        assert_eq!(quoted, "'http://localhost:3000/health?ready=true&source=barzel'");
     }
 
     // ── client error ──────────────────────────────────────────────────────────
@@ -273,7 +307,8 @@ mod tests {
     // ── mixed results ─────────────────────────────────────────────────────────
 
     #[test]
-    fn mixed_pass_and_mismatch_partial_status() {
+    fn mixed_pass_and_mismatch_layer_is_fail() {
+        // Even one failed check fails the Operational layer.
         let r = runner_with(
             vec![
                 check("api", "http://localhost:3000/health"),
@@ -282,7 +317,7 @@ mod tests {
             MockHttpClient::new(vec![Ok(200), Ok(503)]),
         );
         let result = r.run(&project()).unwrap();
-        assert!(matches!(result.status, LayerStatus::Partial));
+        assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.metrics.passed, 1);
         assert_eq!(result.metrics.failed, 1);
     }

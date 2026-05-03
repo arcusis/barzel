@@ -728,4 +728,32 @@ mod tests {
         );
         assert_eq!(report.summary.total_findings, 1, "skip report has exactly one Info finding");
     }
+
+    // ── health check runner registration ─────────────────────────────────────
+
+    #[test]
+    fn no_health_checks_means_no_health_check_runner_in_report() {
+        use crate::config::{BarzelConfig, OperationalConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        // Minimal project — no Cargo.toml, no .barzel.toml → defaults
+        let project = crate::detect::ProjectInfo {
+            language: Language::Unknown,
+            root: dir.path().to_string_lossy().into_owned(),
+            has_tests: false,
+            package_name: None,
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.operational = OperationalConfig { health_checks: vec![] };
+
+        let report = run_project_report(&project, &cfg, &None, false, false, true).unwrap();
+
+        let has_health_check_layer = report.layers.iter().any(|l| l.runner == "health-check");
+        assert!(!has_health_check_layer,
+            "with no health_checks configured, no health-check runner result must appear in the report");
+    }
 }
