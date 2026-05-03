@@ -42,12 +42,17 @@ pub fn shell_quote(s: &str) -> String {
 }
 
 /// Truncate long command output to keep finding messages readable.
+/// Truncation is char-boundary safe: counts Unicode scalar values, not bytes,
+/// so multibyte characters (emoji, CJK, etc.) never produce a panic or garbled output.
 fn truncate_output(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim_end();
-    if trimmed.len() <= max_chars {
+    let char_count = trimmed.chars().count();
+    if char_count <= max_chars {
         trimmed.to_string()
     } else {
-        format!("{}… (truncated)", trimmed[..max_chars].trim_end())
+        // Collect exactly max_chars Unicode scalar values
+        let truncated: String = trimmed.chars().take(max_chars).collect();
+        format!("{}… (truncated)", truncated.trim_end())
     }
 }
 
@@ -492,5 +497,28 @@ mod tests {
         let msg = &result.findings[0].message;
         assert!(msg.contains("truncated"), "long output must be truncated in finding");
         assert!(msg.len() < 500, "truncated message must be shorter than raw output");
+    }
+
+    #[test]
+    fn multibyte_output_truncates_safely() {
+        // 🔥 is 4 bytes; 100 copies = 400 bytes but only 100 Unicode scalars.
+        // With a byte-based slice this would panic; char-based must not.
+        let emoji_output = "🔥".repeat(100);
+        assert!(emoji_output.len() > 300, "emoji output must exceed byte limit");
+        assert!(emoji_output.chars().count() == 100);
+        let truncated = truncate_output(&emoji_output, 50);
+        assert!(truncated.contains("truncated"), "must be truncated");
+        // 50 chars taken + "… (truncated)" suffix (13 chars) = 63 max
+        assert!(truncated.chars().count() <= 70, "truncated output must be bounded in chars");
+        // Valid UTF-8 — no panic, no garbled surrogate halves
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn short_multibyte_output_not_truncated() {
+        let short = "héllo wörld"; // 11 chars, some multibyte
+        let result = truncate_output(short, 50);
+        assert_eq!(result, short);
+        assert!(!result.contains("truncated"));
     }
 }
