@@ -126,7 +126,63 @@ fn extract_count(line: &str, label: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
     use proptest::prelude::*;
+
+    // ── runner metadata ───────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_proptest() {
+        assert_eq!(ProptestRunner.name(), "proptest");
+    }
+
+    #[test]
+    fn layer_is_logic() {
+        assert!(matches!(ProptestRunner.layer(), crate::plugin::Layer::Logic));
+    }
+
+    #[test]
+    fn skip_message_mentions_proptest() {
+        let msg = ProptestRunner.skip_message();
+        assert!(!msg.is_empty());
+        assert!(msg.contains("proptest"));
+    }
+
+    // ── is_available ──────────────────────────────────────────────────────────
+
+    fn info(language: Language, root: &str) -> ProjectInfo {
+        ProjectInfo { language, root: root.to_string(), has_tests: false, package_name: None }
+    }
+
+    #[test]
+    fn not_available_for_typescript() {
+        assert!(!ProptestRunner.is_available(&info(Language::TypeScript, "/tmp")));
+    }
+
+    #[test]
+    fn not_available_for_go() {
+        assert!(!ProptestRunner.is_available(&info(Language::Go, "/tmp")));
+    }
+
+    #[test]
+    fn not_available_when_proptest_not_in_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
+        assert!(!ProptestRunner.is_available(&info(Language::Rust, &dir.path().to_string_lossy())));
+    }
+
+    #[test]
+    fn available_when_proptest_in_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[dev-dependencies]\nproptest = \"1.0\"",
+        )
+        .unwrap();
+        assert!(ProptestRunner.is_available(&info(Language::Rust, &dir.path().to_string_lossy())));
+    }
+
+    // ── parse_test_counts ─────────────────────────────────────────────────────
 
     #[test]
     fn parses_standard_summary_line() {

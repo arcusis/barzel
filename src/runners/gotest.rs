@@ -187,7 +187,39 @@ fn parse_go_json_output(output: &str) -> (u64, u64, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
     use proptest::prelude::*;
+
+    fn go_info() -> ProjectInfo {
+        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None }
+    }
+
+    #[test]
+    fn name_is_go_test() {
+        assert_eq!(GoTestRunner.name(), "go-test");
+    }
+
+    #[test]
+    fn layer_is_logic() {
+        assert!(matches!(GoTestRunner.layer(), crate::plugin::Layer::Logic));
+    }
+
+    #[test]
+    fn skip_message_nonempty() {
+        assert!(!GoTestRunner.skip_message().is_empty());
+    }
+
+    #[test]
+    fn not_available_for_rust() {
+        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None };
+        assert!(!GoTestRunner.is_available(&info));
+    }
+
+    #[test]
+    fn not_available_for_typescript() {
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None };
+        assert!(!GoTestRunner.is_available(&info));
+    }
 
     fn make_event(action: &str, test: Option<&str>) -> String {
         if let Some(t) = test {

@@ -161,7 +161,39 @@ fn count_before_label(line: &str, label: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
     use proptest::prelude::*;
+
+    fn info(lang: Language) -> ProjectInfo {
+        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None }
+    }
+
+    #[test]
+    fn name_is_cargo_mutants() {
+        assert_eq!(MutantsRunner::default().name(), "cargo-mutants");
+    }
+
+    #[test]
+    fn layer_is_structural() {
+        assert!(matches!(MutantsRunner::default().layer(), crate::plugin::Layer::Structural));
+    }
+
+    #[test]
+    fn skip_message_nonempty_and_mentions_cargo_mutants() {
+        let msg = MutantsRunner::default().skip_message();
+        assert!(!msg.is_empty());
+        assert!(msg.contains("cargo-mutants") || msg.contains("cargo install"));
+    }
+
+    #[test]
+    fn not_available_for_typescript() {
+        assert!(!MutantsRunner::default().is_available(&info(Language::TypeScript)));
+    }
+
+    #[test]
+    fn not_available_for_go() {
+        assert!(!MutantsRunner::default().is_available(&info(Language::Go)));
+    }
 
     #[test]
     fn parses_new_format_with_unviable() {

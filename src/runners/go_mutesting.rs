@@ -166,7 +166,37 @@ fn build_findings(mutation_score: Option<f64>, threshold: f64) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
     use proptest::prelude::*;
+
+    fn info(lang: Language) -> ProjectInfo {
+        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None }
+    }
+
+    #[test]
+    fn name_is_go_mutesting() {
+        assert_eq!(GoMutestingRunner::default().name(), "go-mutesting");
+    }
+
+    #[test]
+    fn layer_is_structural() {
+        assert!(matches!(GoMutestingRunner::default().layer(), crate::plugin::Layer::Structural));
+    }
+
+    #[test]
+    fn skip_message_nonempty() {
+        assert!(!GoMutestingRunner::default().skip_message().is_empty());
+    }
+
+    #[test]
+    fn not_available_for_rust() {
+        assert!(!GoMutestingRunner::default().is_available(&info(Language::Rust)));
+    }
+
+    #[test]
+    fn not_available_for_typescript() {
+        assert!(!GoMutestingRunner::default().is_available(&info(Language::TypeScript)));
+    }
 
     #[test]
     fn parses_standard_score_line() {
