@@ -5,19 +5,22 @@ use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use crate::runners::aisec::AiSecRunner;
 use crate::runners::bandit::BanditRunner;
-use crate::runners::mutmut::MutmutRunner;
 use crate::runners::cargo_fuzz::CargoFuzzRunner;
+use crate::runners::eslint::EslintRunner;
 use crate::runners::fastcheck::FastCheckRunner;
-use crate::runners::jest::JestRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
 use crate::runners::gotest::GoTestRunner;
+use crate::runners::jest::JestRunner;
 use crate::runners::kani::KaniRunner;
 use crate::runners::mutants::MutantsRunner;
+use crate::runners::mutmut::MutmutRunner;
+use crate::runners::mypy::MypyRunner;
 use crate::runners::playwright::PlaywrightRunner;
 use crate::runners::proptest::ProptestRunner;
 use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
 use crate::runners::stryker::StrykerRunner;
+use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::path::Path;
@@ -51,6 +54,8 @@ pub fn run_verification(
     let kani = KaniRunner::default();
     let mutants = MutantsRunner::with_threshold(threshold);
     let cargo_fuzz = CargoFuzzRunner::default();
+    let tsc = TscRunner::default();
+    let eslint = EslintRunner::default();
     let fastcheck = FastCheckRunner::default();
     let jest = JestRunner::default();
     let stryker = StrykerRunner::with_threshold(threshold);
@@ -58,6 +63,7 @@ pub fn run_verification(
     let go_mutesting = GoMutestingRunner::with_threshold(threshold);
     let semgrep = SemgrepRunner::default();
     let pytest = PytestRunner::default();
+    let mypy = MypyRunner::default();
     let mutmut = MutmutRunner::with_threshold(threshold);
     let bandit = BanditRunner::default();
     let aisec = AiSecRunner::default();
@@ -65,8 +71,8 @@ pub fn run_verification(
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
-        Language::TypeScript => vec![&jest, &fastcheck, &stryker, &playwright, &semgrep],
-        Language::Python => vec![&pytest, &mutmut, &bandit, &semgrep],
+        Language::TypeScript => vec![&jest, &tsc, &fastcheck, &stryker, &playwright, &eslint, &semgrep],
+        Language::Python => vec![&pytest, &mypy, &mutmut, &bandit, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
     };

@@ -1,6 +1,7 @@
 pub mod aisec;
 pub mod bandit;
 pub mod cargo_fuzz;
+pub mod eslint;
 pub mod fastcheck;
 pub mod go_mutesting;
 pub mod gotest;
@@ -8,8 +9,10 @@ pub mod jest;
 pub mod kani;
 pub mod mutants;
 pub mod mutmut;
+pub mod mypy;
 pub mod playwright;
 pub mod proptest;
 pub mod pytest;
 pub mod semgrep;
 pub mod stryker;
+pub mod tsc;
