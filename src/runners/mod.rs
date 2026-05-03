@@ -1,5 +1,6 @@
 pub mod aisec;
 pub mod bandit;
+pub mod cargo_audit;
 pub mod cargo_fuzz;
 pub mod eslint;
 pub mod fastcheck;
@@ -10,6 +11,8 @@ pub mod kani;
 pub mod mutants;
 pub mod mutmut;
 pub mod mypy;
+pub mod npm_audit;
+pub mod pip_audit;
 pub mod playwright;
 pub mod proptest;
 pub mod pytest;

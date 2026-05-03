@@ -5,7 +5,10 @@ use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use crate::runners::aisec::AiSecRunner;
 use crate::runners::bandit::BanditRunner;
+use crate::runners::cargo_audit::CargoAuditRunner;
 use crate::runners::cargo_fuzz::CargoFuzzRunner;
+use crate::runners::npm_audit::NpmAuditRunner;
+use crate::runners::pip_audit::PipAuditRunner;
 use crate::runners::eslint::EslintRunner;
 use crate::runners::fastcheck::FastCheckRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
@@ -55,6 +58,9 @@ pub fn run_verification(
     let kani = KaniRunner::default();
     let mutants = MutantsRunner::with_threshold(threshold);
     let cargo_fuzz = CargoFuzzRunner::default();
+    let cargo_audit = CargoAuditRunner::default();
+    let npm_audit = NpmAuditRunner::default();
+    let pip_audit = PipAuditRunner::default();
     let tsc = TscRunner::default();
     let eslint = EslintRunner::default();
     let fastcheck = FastCheckRunner::default();
@@ -71,9 +77,9 @@ pub fn run_verification(
     let playwright = PlaywrightRunner::default();
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
-        Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
-        Language::TypeScript => vec![&jest, &tsc, &fastcheck, &stryker, &playwright, &eslint, &semgrep],
-        Language::Python => vec![&pytest, &mypy, &mutmut, &bandit, &semgrep],
+        Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &cargo_audit, &semgrep],
+        Language::TypeScript => vec![&jest, &tsc, &fastcheck, &stryker, &playwright, &eslint, &npm_audit, &semgrep],
+        Language::Python => vec![&pytest, &mypy, &mutmut, &bandit, &pip_audit, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
     };
