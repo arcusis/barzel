@@ -38,55 +38,90 @@ impl<'a> VerificationOrchestrator<'a> {
         F: Fn(&str, &str) + Sync,
     {
         let project_root = Path::new(&project.root);
-        let mut all_results: Vec<LayerResult> = Vec::new();
 
-        // Phase 1: Logic + Hostile + Operational run in parallel.
-        // Phase 2: Structural runs sequentially after (mutation testing needs passing tests).
+        // When fail_fast is set, run sequentially to stop on first failure.
+        // When fail_fast is off, phase-1 (Logic + Hostile + Operational) runs in parallel.
+        let indexed_results: Vec<(usize, LayerResult)> = if self.fail_fast {
+            self.run_sequential(project, project_root, &on_start)
+        } else {
+            self.run_parallel(project, project_root, &on_start)
+        };
+
+        // Sort by (layer_priority, original_runner_index) for deterministic output
+        let mut sorted = indexed_results;
+        sorted.sort_by_key(|(i, r)| (layer_priority(layer_from_str(&r.name)), *i));
+
+        let mut report = BarzelReport::new(project.clone());
+        for (_, result) in sorted {
+            report.add_layer(result);
+        }
+
+        Ok(report)
+    }
+
+    fn run_sequential<F>(
+        &self,
+        project: &ProjectInfo,
+        project_root: &Path,
+        on_start: &F,
+    ) -> Vec<(usize, LayerResult)>
+    where
+        F: Fn(&str, &str) + Sync,
+    {
+        let mut results = Vec::new();
+        for (i, runner) in self.runners.iter().enumerate() {
+            let result = self.run_one(runner, project, project_root, on_start);
+            let is_fail = matches!(result.status, LayerStatus::Fail);
+            results.push((i, result));
+            if is_fail {
+                break;
+            }
+        }
+        results
+    }
+
+    fn run_parallel<F>(
+        &self,
+        project: &ProjectInfo,
+        project_root: &Path,
+        on_start: &F,
+    ) -> Vec<(usize, LayerResult)>
+    where
+        F: Fn(&str, &str) + Sync,
+    {
+        // Phase 1: Logic + Hostile + Operational in parallel (indexed for stable ordering)
         let (phase1, phase2): (Vec<_>, Vec<_>) = self
             .runners
             .iter()
-            .partition(|r| !matches!(r.layer(), Layer::Structural));
+            .enumerate()
+            .partition(|(_, r)| !matches!(r.layer(), Layer::Structural));
 
-        // Run phase 1 in parallel using scoped threads
-        let phase1_results: Vec<LayerResult> = std::thread::scope(|scope| {
+        let mut phase1_results: Vec<(usize, LayerResult)> = std::thread::scope(|scope| {
             let handles: Vec<_> = phase1
                 .iter()
-                .map(|runner| {
-                    scope.spawn(|| self.run_one(runner, project, project_root, &on_start))
+                .map(|(i, runner)| {
+                    let i = *i;
+                    scope.spawn(move || (i, self.run_one(runner, project, project_root, on_start)))
                 })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
 
-        // Check fail_fast before running phase 2
-        let logic_failed = phase1_results.iter().any(|r| {
+        let logic_failed = phase1_results.iter().any(|(_, r)| {
             matches!(r.status, LayerStatus::Fail) && r.name == "logic"
         });
-        all_results.extend(phase1_results);
 
-        if self.fail_fast && logic_failed {
-            // Skip structural — pointless to measure mutation score when tests fail
-        } else {
-            // Phase 2: Structural — must run sequentially (writes to disk, long-running)
-            for runner in &phase2 {
-                let result = self.run_one(runner, project, project_root, &on_start);
-                let is_fail = matches!(result.status, LayerStatus::Fail);
-                all_results.push(result);
-                if self.fail_fast && is_fail {
-                    break;
-                }
+        // Phase 2: Structural runs after — skip if logic already failed (useless to mutate broken tests)
+        let mut phase2_results: Vec<(usize, LayerResult)> = Vec::new();
+        if !logic_failed {
+            for (i, runner) in &phase2 {
+                let result = self.run_one(runner, project, project_root, on_start);
+                phase2_results.push((*i, result));
             }
         }
 
-        // Sort results by layer priority for deterministic output
-        all_results.sort_by_key(|r| layer_priority(layer_from_str(&r.name)));
-
-        let mut report = BarzelReport::new(project.clone());
-        for result in all_results {
-            report.add_layer(result);
-        }
-
-        Ok(report)
+        phase1_results.append(&mut phase2_results);
+        phase1_results
     }
 
     /// Run a single runner, handling unavailable/cached/error cases.
@@ -274,19 +309,39 @@ mod tests {
     }
 
     #[test]
-    fn fail_fast_stops_after_logic_failure() {
+    fn fail_fast_runs_sequentially_and_stops_on_first_failure() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
+        // Logic fails, then Hostile is registered but must NOT run
         let fail = FailRunner { layer: Layer::Logic };
-        let pass = PassRunner { layer: Layer::Structural, name: "second-runner" };
+        let pass = PassRunner { layer: Layer::Hostile, name: "hostile-runner" };
         let orch = VerificationOrchestrator::new(vec![
             &fail as &dyn TestRunner,
             &pass as &dyn TestRunner,
         ]).with_fail_fast();
         let report = orch.run(&project).unwrap();
-        // Structural skipped due to fail_fast + logic failure
+        // Only the failing layer — hostile was never called
         assert_eq!(report.layers.len(), 1);
         assert!(matches!(report.layers[0].status, LayerStatus::Fail));
+    }
+
+    #[test]
+    fn fail_fast_stops_on_any_layer_failure_not_just_logic() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let pass = PassRunner { layer: Layer::Logic, name: "logic-pass" };
+        let fail = FailRunner { layer: Layer::Hostile };
+        let pass2 = PassRunner { layer: Layer::Structural, name: "struct-pass" };
+        let orch = VerificationOrchestrator::new(vec![
+            &pass as &dyn TestRunner,
+            &fail as &dyn TestRunner,
+            &pass2 as &dyn TestRunner,
+        ]).with_fail_fast();
+        let report = orch.run(&project).unwrap();
+        // Stopped after hostile failure — structural never ran
+        assert_eq!(report.layers.len(), 2);
+        assert!(report.layers.iter().any(|l| matches!(l.status, LayerStatus::Fail)));
+        assert!(!report.layers.iter().any(|l| l.runner == "struct-pass"));
     }
 
     #[test]

@@ -424,7 +424,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         // Cross-language SAST
         Tool { name: "semgrep", check_args: &["--version"], layer: "hostile", install: "pip install semgrep  OR  brew install semgrep" },
         // Dependency vulnerability scanners — update this list when adding new audit runners
-        Tool { name: "cargo-audit", check_args: &["audit", "--version"], layer: "hostile", install: "cargo install cargo-audit" },
+        Tool { name: "cargo audit", check_args: &["audit", "--version"], layer: "hostile", install: "cargo install cargo-audit" },
         Tool { name: "pip-audit", check_args: &["--version"], layer: "hostile", install: "pip install pip-audit" },
         // (npm-audit uses npm which is already listed above)
         // Go toolchain
