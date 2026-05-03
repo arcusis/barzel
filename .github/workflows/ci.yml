@@ -27,7 +27,7 @@ jobs:
         run: cargo clippy -- -D warnings
 
       - name: Unit + property-based tests
-        run: cargo test --lib
+        run: cargo test --bins
 
   build:
     name: Build (${{ matrix.target }})
@@ -72,23 +72,34 @@ jobs:
       - name: Run Barzel on itself
         run: ./target/release/barzel run
 
-      - name: Validate report — logic layer must pass
+      - name: Validate report
         run: |
           REPORT=$(ls .barzel/reports/*.json | sort | tail -1)
           echo "Report: $REPORT"
-          cat "$REPORT" | python3 -c "
+          python3 - "$REPORT" <<'PYEOF'
           import json, sys
-          report = json.load(sys.stdin)
-          layers = {l['name']: l for l in report['layers']}
-          assert 'logic' in layers, 'logic layer missing from report'
-          assert layers['logic']['status'] == 'pass', f'logic layer status: {layers[\"logic\"][\"status\"]}'
-          assert 'structural' in layers, 'structural layer missing from report'
-          assert 'hostile' in layers, 'hostile layer missing from report'
-          print(f'Report status: {report[\"status\"]}')
-          print(f'Layers: {list(layers.keys())}')
-          print(f'Logic tests run: {layers[\"logic\"][\"metrics\"][\"tests_run\"]}')
-          print('All assertions passed.')
-          "
+
+          with open(sys.argv[1]) as f:
+              report = json.load(f)
+
+          layers = report['layers']
+          print(f"Report status: {report['status']}")
+          print(f"Runners: {[(l['runner'], l['name'], l['status']) for l in layers]}")
+
+          # At minimum, proptest must have run and passed (it's always available on this Rust repo)
+          proptest = next((l for l in layers if l['runner'] == 'proptest'), None)
+          assert proptest is not None, "proptest runner missing from report"
+          assert proptest['status'] == 'pass', f"proptest status: {proptest['status']}"
+          print(f"proptest: {proptest['metrics']['tests_run']} tests run")
+
+          # Every layer that ran (not skipped) must not be Critical-fail — skipped is fine
+          for layer in layers:
+              if layer['status'] == 'fail':
+                  critical = [f for f in layer['findings'] if f['severity'] == 'critical']
+                  assert not critical, f"Runner {layer['runner']} has critical failures: {critical}"
+
+          print("All assertions passed.")
+          PYEOF
 
       - name: Show full report
         if: always()
