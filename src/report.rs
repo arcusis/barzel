@@ -229,26 +229,31 @@ impl BarzelReport {
             return Ok(None);
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(&reports_dir)?
-            .flatten()
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|x| x == "json")
-                    .unwrap_or(false)
-            })
-            .collect();
+        // Deserialize every report and pick the one with the greatest timestamp.
+        // Filename ordering is unreliable when two reports share the same
+        // filename-second (same-second saves now have different ID suffixes).
+        // Full DateTime has sub-second precision, so this is always correct.
+        // Path is used as a deterministic tie-breaker in the pathological case
+        // where two reports have identical timestamps.
+        let mut best: Option<(Self, std::path::PathBuf)> = None;
 
-        entries.sort_by_key(|e| e.file_name());
-
-        match entries.last() {
-            None => Ok(None),
-            Some(entry) => {
-                let content = std::fs::read_to_string(entry.path())?;
-                let report: Self = serde_json::from_str(&content)?;
-                Ok(Some(report))
+        for entry in std::fs::read_dir(&reports_dir)?.flatten() {
+            let path = entry.path();
+            if !path.extension().map(|x| x == "json").unwrap_or(false) { continue; }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(report) = serde_json::from_str::<Self>(&content) {
+                    let is_newer = best.as_ref().is_none_or(|(prev, prev_path)| {
+                        report.timestamp > prev.timestamp
+                            || (report.timestamp == prev.timestamp && path > *prev_path)
+                    });
+                    if is_newer {
+                        best = Some((report, path));
+                    }
+                }
             }
         }
+
+        Ok(best.map(|(report, _)| report))
     }
 
     pub fn load_by_id(base_dir: &Path, id: &str) -> crate::error::Result<Option<Self>> {
@@ -461,6 +466,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = BarzelReport::load_latest(dir.path()).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_latest_uses_timestamp_not_filename_for_same_second() {
+        // Two reports with the same filename-second but different subsecond timestamps.
+        // load_latest must return the one with the greater DateTime, not the one
+        // that sorts later by filename.
+        use chrono::Duration;
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut older = BarzelReport::new(dummy_project());
+        let mut newer = BarzelReport::new(dummy_project());
+
+        // Give the "newer" report a timestamp 500ms later but the same wall-clock second,
+        // so filename ordering could disagree with timestamp ordering.
+        let base_time = older.timestamp;
+        older.timestamp = base_time;
+        newer.timestamp = base_time + Duration::milliseconds(500);
+
+        // Force older to sort later by filename (higher ID prefix) to expose the bug.
+        older.id = "zzzzzzzz-0000-0000-0000-000000000000".to_string();
+        newer.id = "00000000-0000-0000-0000-000000000000".to_string();
+
+        older.save(dir.path()).unwrap();
+        newer.save(dir.path()).unwrap();
+
+        let latest = BarzelReport::load_latest(dir.path()).unwrap().unwrap();
+        assert_eq!(
+            latest.id, newer.id,
+            "load_latest must return the report with the greater timestamp, not the later filename"
+        );
     }
 
     #[test]
