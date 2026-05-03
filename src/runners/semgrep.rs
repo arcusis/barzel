@@ -19,6 +19,7 @@ impl Default for SemgrepRunner {
 
 /// Collect `.yml` / `.yaml` rule files from `<root>/.barzel/rules/`, sorted
 /// deterministically. Returns an empty vec when the directory is absent or empty.
+/// Only regular files are included — directories named `*.yaml` are silently skipped.
 fn collect_custom_rule_paths(root: &Path) -> Vec<PathBuf> {
     let rules_dir = root.join(".barzel").join("rules");
     let Ok(entries) = std::fs::read_dir(&rules_dir) else { return vec![]; };
@@ -27,15 +28,23 @@ fn collect_custom_rule_paths(root: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e == "yml" || e == "yaml")
-                .unwrap_or(false)
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == "yml" || e == "yaml")
+                    .unwrap_or(false)
         })
         .collect();
 
     paths.sort();
     paths
+}
+
+/// Wrap `s` in single quotes for safe POSIX shell inclusion.
+/// Embedded single quotes are escaped as `'\''`.
+/// Used only when building human/agent reproduce strings, never for argv.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Build the full semgrep argv as owned Strings.
@@ -56,9 +65,10 @@ fn build_semgrep_args(ruleset: &str, custom_rules: &[PathBuf]) -> Vec<String> {
 }
 
 /// Format all `--config` values into a shell-pasteable reproduce command.
+/// Config paths and the target are shell-quoted to handle spaces in paths.
 fn build_error_reproduce_cmd(ruleset: &str, custom_rules: &[PathBuf]) -> String {
-    let configs: Vec<String> = std::iter::once(format!("--config {}", ruleset))
-        .chain(custom_rules.iter().map(|p| format!("--config {}", p.display())))
+    let configs: Vec<String> = std::iter::once(format!("--config {}", shell_quote(ruleset)))
+        .chain(custom_rules.iter().map(|p| format!("--config {}", shell_quote(&p.to_string_lossy()))))
         .collect();
     format!("semgrep {} . 2>&1", configs.join(" "))
 }
@@ -191,13 +201,13 @@ fn parse_semgrep_json(output: &str, all_configs: &[String]) -> Vec<Finding> {
 
             // Include all configs in the reproduce command so the exact run can be
             // replicated regardless of whether the finding came from a standard
-            // ruleset or a local custom rule.
+            // ruleset or a local custom rule. Paths are shell-quoted to handle spaces.
             let reproduce_cmd = path.map(|p| {
                 let config_args: Vec<String> = all_configs
                     .iter()
-                    .map(|c| format!("--config {}", c))
+                    .map(|c| format!("--config {}", shell_quote(c)))
                     .collect();
-                format!("semgrep {} --include {} .", config_args.join(" "), p)
+                format!("semgrep {} --include {} .", config_args.join(" "), shell_quote(p))
             });
 
             Finding {
@@ -299,6 +309,19 @@ mod tests {
     }
 
     #[test]
+    fn ignores_directory_named_with_yaml_extension() {
+        let dir = tempdir().unwrap();
+        let rules = dir.path().join(".barzel/rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        // A directory ending in .yaml must not be treated as a rule file
+        std::fs::create_dir_all(rules.join("ignored.yaml")).unwrap();
+        std::fs::write(rules.join("real.yml"), b"rules:").unwrap();
+        let paths = collect_custom_rule_paths(dir.path());
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].file_name().unwrap() == "real.yml");
+    }
+
+    #[test]
     fn collects_yml_and_yaml_files_sorted() {
         let dir = tempdir().unwrap();
         let rules = dir.path().join(".barzel/rules");
@@ -315,6 +338,51 @@ mod tests {
             .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap())
             .collect();
         assert_eq!(names, ["a-rules.yml", "m-rules.yaml", "z-rules.yaml"]);
+    }
+
+    // ── shell_quote ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn shell_quote_wraps_in_single_quotes() {
+        assert_eq!(shell_quote("p/python"), "'p/python'");
+    }
+
+    #[test]
+    fn shell_quote_handles_paths_with_spaces() {
+        assert_eq!(shell_quote("/my rules/custom.yml"), "'/my rules/custom.yml'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn reproduce_cmd_with_spaces_in_rule_path_is_quoted() {
+        let json = r#"{"results":[{
+            "check_id": "my-rule",
+            "path": "src/my file.py",
+            "start": {"line": 1},
+            "extra": {"severity": "ERROR", "message": "issue"}
+        }]}"#;
+        let configs = vec![
+            "p/python".to_string(),
+            "/project/my rules/custom.yml".to_string(),
+        ];
+        let findings = parse_semgrep_json(json, &configs);
+        let cmd = findings[0].reproduce_cmd.as_deref().unwrap();
+        // Both the config path and the --include path must be quoted
+        assert!(cmd.contains("'p/python'"), "ruleset must be quoted");
+        assert!(cmd.contains("'/project/my rules/custom.yml'"), "rule path with space must be quoted");
+        assert!(cmd.contains("'src/my file.py'"), "file path with space must be quoted");
+    }
+
+    #[test]
+    fn error_reproduce_cmd_with_spaces_is_quoted() {
+        let custom = vec![PathBuf::from("/project/my rules/custom.yml")];
+        let cmd = build_error_reproduce_cmd("p/python", &custom);
+        assert!(cmd.contains("'p/python'"));
+        assert!(cmd.contains("'/project/my rules/custom.yml'"));
     }
 
     // ── build_semgrep_args ────────────────────────────────────────────────────
@@ -497,9 +565,9 @@ mod tests {
         let configs = vec!["p/python".to_string(), ".barzel/rules/custom.yml".to_string()];
         let findings = parse_semgrep_json(json, &configs);
         let cmd = findings[0].reproduce_cmd.as_deref().unwrap();
-        assert!(cmd.contains("--config p/python"));
-        assert!(cmd.contains("--config .barzel/rules/custom.yml"));
-        assert!(cmd.contains("--include src/app.py"));
+        assert!(cmd.contains("--config 'p/python'"));
+        assert!(cmd.contains("--config '.barzel/rules/custom.yml'"));
+        assert!(cmd.contains("--include 'src/app.py'"));
     }
 
     #[test]
