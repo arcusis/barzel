@@ -156,12 +156,7 @@ fn handle_stdio() -> ExitCode {
                 Ok(project) => {
                     use crate::process::OsProcessRunner;
                     let statuses = tool_registry::probe_all(&OsProcessRunner);
-                    let tool_json: Vec<serde_json::Value> = statuses.iter().map(|s| serde_json::json!({
-                        "name":      s.name,
-                        "layer":     s.layer,
-                        "available": s.available,
-                        "install":   s.install,
-                    })).collect();
+                    let tool_json = tool_registry::tool_statuses_to_json(&statuses);
 
                     let resp = create_response("success", request_id, Some(serde_json::json!({
                         "language": project.language.to_string(),
@@ -862,14 +857,9 @@ mod tests {
     #[test]
     fn stdio_check_tool_json_includes_install_guidance() {
         use crate::process::MockProcessRunner;
-        // All tools unavailable — every entry must carry install guidance
+        // All tools spawn-fail — every JSON entry must still carry install guidance.
         let statuses = tool_registry::probe_all(&MockProcessRunner::unavailable());
-        let tool_json: Vec<serde_json::Value> = statuses.iter().map(|s| serde_json::json!({
-            "name":      s.name,
-            "layer":     s.layer,
-            "available": s.available,
-            "install":   s.install,
-        })).collect();
+        let tool_json = tool_registry::tool_statuses_to_json(&statuses);
 
         for entry in &tool_json {
             let install = entry["install"].as_str().unwrap_or("");
@@ -880,26 +870,38 @@ mod tests {
     }
 
     #[test]
-    fn human_and_stdio_paths_use_same_registry() {
-        // Both cmd_check and the stdio handler call probe_all(TOOL_REGISTRY).
-        // This test verifies the registry length is what both paths would see.
-        use crate::tool_registry::TOOL_REGISTRY;
-        use crate::process::MockProcessRunner;
-        let statuses = tool_registry::probe_all(&MockProcessRunner::passing("ok"));
-        assert_eq!(statuses.len(), TOOL_REGISTRY.len(),
-            "probe_all must return one status per registry entry");
-        // Both check paths iterate this same slice — length drift is impossible
-        // as long as both call probe_all.
+    fn tool_statuses_to_json_produces_correct_shape() {
+        // Verify the shared helper produces all four required fields.
+        use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
+        let statuses = vec![
+            ToolStatus { name: "cargo", layer: "core", available: true,  install: "https://rustup.rs" },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep" },
+        ];
+        let json = tool_statuses_to_json(&statuses);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["name"].as_str(), Some("cargo"));
+        assert_eq!(json[0]["layer"].as_str(), Some("core"));
+        assert_eq!(json[0]["available"].as_bool(), Some(true));
+        assert_eq!(json[0]["install"].as_str(), Some("https://rustup.rs"));
+        assert_eq!(json[1]["available"].as_bool(), Some(false));
+        // stdio and human paths both call tool_statuses_to_json — drift is structurally
+        // impossible as long as both go through this helper.
     }
 
     #[test]
-    fn stdio_check_tool_json_contains_go_mutesting_and_cargo_audit() {
+    fn stdio_check_tool_json_contains_expected_tools() {
         use crate::process::MockProcessRunner;
         let statuses = tool_registry::probe_all(&MockProcessRunner::passing("ok"));
-        let names: Vec<&str> = statuses.iter().map(|s| s.name).collect();
-        assert!(names.contains(&"go-mutesting"), "go-mutesting must be in probe results");
-        assert!(names.contains(&"cargo audit"), "cargo audit must be in probe results");
-        assert!(names.contains(&"pip-audit"), "pip-audit must be in probe results");
-        assert!(names.contains(&"semgrep"), "semgrep must be in probe results");
+        let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+        let names: Vec<&str> = tool_json.iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        assert!(names.contains(&"go-mutesting"), "go-mutesting must be in stdio payload");
+        assert!(names.contains(&"cargo audit"),  "cargo audit must be in stdio payload");
+        assert!(names.contains(&"pip-audit"),    "pip-audit must be in stdio payload");
+        assert!(names.contains(&"semgrep"),      "semgrep must be in stdio payload");
+        assert!(names.contains(&"npm"),  "npm must be in stdio payload (backs npm audit)");
+        assert!(names.contains(&"pnpm"), "pnpm must be in stdio payload (backs pnpm audit)");
+        assert!(names.contains(&"yarn"), "yarn must be in stdio payload (backs yarn audit)");
     }
 }
