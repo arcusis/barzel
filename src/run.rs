@@ -24,6 +24,7 @@ use crate::runners::proptest::ProptestRunner;
 use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
 use crate::runners::health_check::HealthCheckRunner;
+use crate::runners::operational_command::OperationalCommandRunner;
 use crate::runners::stryker::StrykerRunner;
 use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -307,6 +308,7 @@ fn run_project_report(
     let aisec = AiSecRunner::default();
     let playwright = PlaywrightRunner::default();
     let health_check = HealthCheckRunner::new(cfg.layers.operational.health_checks.clone());
+    let operational_cmd = OperationalCommandRunner::new(cfg.layers.operational.commands.clone());
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &cargo_audit, &semgrep],
@@ -321,6 +323,9 @@ fn run_project_report(
     }
     if !cfg.layers.operational.health_checks.is_empty() {
         language_runners.push(&health_check);
+    }
+    if !cfg.layers.operational.commands.is_empty() {
+        language_runners.push(&operational_cmd);
     }
 
     let enabled = &cfg.layers.enabled;
@@ -748,7 +753,7 @@ mod tests {
         };
 
         let mut cfg = BarzelConfig::default();
-        cfg.layers.operational = OperationalConfig { health_checks: vec![] };
+        cfg.layers.operational = OperationalConfig { health_checks: vec![], commands: vec![] };
 
         // Filter to Operational layer only so no language runners (Semgrep etc.) are
         // invoked — the test must not depend on external tool availability.
@@ -758,5 +763,8 @@ mod tests {
         let has_health_check_layer = report.layers.iter().any(|l| l.runner == "health-check");
         assert!(!has_health_check_layer,
             "with no health_checks configured, no health-check runner result must appear in the report");
+        let has_cmd_layer = report.layers.iter().any(|l| l.runner == "operational-cmd");
+        assert!(!has_cmd_layer,
+            "with no commands configured, no operational-cmd runner result must appear in the report");
     }
 }
