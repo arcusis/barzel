@@ -4,6 +4,8 @@ use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use crate::runners::aisec::AiSecRunner;
+use crate::runners::bandit::BanditRunner;
+use crate::runners::mutmut::MutmutRunner;
 use crate::runners::cargo_fuzz::CargoFuzzRunner;
 use crate::runners::fastcheck::FastCheckRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
@@ -54,13 +56,15 @@ pub fn run_verification(
     let go_mutesting = GoMutestingRunner::with_threshold(threshold);
     let semgrep = SemgrepRunner::default();
     let pytest = PytestRunner::default();
+    let mutmut = MutmutRunner::with_threshold(threshold);
+    let bandit = BanditRunner::default();
     let aisec = AiSecRunner::default();
     let playwright = PlaywrightRunner::default();
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
         Language::TypeScript => vec![&fastcheck, &stryker, &playwright, &semgrep],
-        Language::Python => vec![&pytest, &semgrep],
+        Language::Python => vec![&pytest, &mutmut, &bandit, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
     };
