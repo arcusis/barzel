@@ -1,0 +1,28 @@
+[package]
+name = "barzel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Barzel Contributors"]
+license = "Apache-2.0"
+description = "The unbreakable testing CLI for AI agents and engineers"
+repository = "https://github.com/arcusis/barzel"
+keywords = ["testing", "verification", "property-based", "mutation", "fuzzing"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+anyhow = "1.0"
+thiserror = "2.0"
+owo-colors = "4.1"
+indicatif = "0.17"
+uuid = { version = "1.16", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.19"
+proptest = "1.6"

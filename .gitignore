@@ -1,0 +1,32 @@
+# Build artifacts
+/target
+**/*.rs.bk
+
+# cargo-mutants output
+/mutants.out/
+/mutants.out.old/
+
+# Claude Code internal
+.claude/scheduled_tasks.lock
+
+# Barzel generated files
+.barzel/
+.barzel.toml
+*.barzel-report.json
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary test directories
+/tmp/barzel-test*
