@@ -47,11 +47,20 @@ impl TestRunner for PytestRunner {
             "pytest".to_string()
         };
 
-        match self.proc.run(&pytest_cmd, &["--tb=short", "-q", "--color=no"], root) {
+        // Add --cov if pytest-cov is available in the environment
+        let has_cov = has_pytest_cov(root);
+        let args: Vec<&str> = if has_cov {
+            vec!["--tb=short", "-q", "--color=no", "--cov=.", "--cov-report=term-missing:skip-covered"]
+        } else {
+            vec!["--tb=short", "-q", "--color=no"]
+        };
+
+        match self.proc.run(&pytest_cmd, &args, root) {
             Ok(out) => {
                 let combined = out.combined();
                 let (passed, failed, errors) = parse_pytest_output(&combined);
                 let total = passed + failed + errors;
+                let coverage = if has_cov { parse_coverage_pct(&combined) } else { None };
 
                 let status = if out.success {
                     LayerStatus::Pass
@@ -112,6 +121,7 @@ impl TestRunner for PytestRunner {
                         tests_run: total,
                         passed,
                         failed: failed + errors,
+                        coverage,
                         ..Default::default()
                     },
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -138,6 +148,37 @@ impl TestRunner for PytestRunner {
             }),
         }
     }
+}
+
+fn has_pytest_cov(root: &Path) -> bool {
+    for file in &["requirements.txt", "requirements-dev.txt", "pyproject.toml"] {
+        if let Ok(content) = std::fs::read_to_string(root.join(file)) {
+            if content.contains("pytest-cov") { return true; }
+        }
+    }
+    // Also check if pytest-cov is installed in venv
+    root.join(".venv").join("lib").exists()
+        && root.join(".venv").join("bin").join("pytest").exists()
+        && std::fs::read_dir(root.join(".venv").join("lib"))
+            .ok()
+            .and_then(|mut d| d.next())
+            .and_then(|e| e.ok())
+            .map(|site| site.path().join("site-packages").join("pytest_cov").exists())
+            .unwrap_or(false)
+}
+
+/// Parse `TOTAL ... 85%` line from pytest-cov output.
+pub fn parse_coverage_pct(output: &str) -> Option<f64> {
+    for line in output.lines().rev() {
+        let t = line.trim();
+        if t.starts_with("TOTAL") {
+            // "TOTAL   1234   200   84%"
+            let last = t.split_whitespace().last()?;
+            let pct_str = last.trim_end_matches('%');
+            return pct_str.parse().ok();
+        }
+    }
+    None
 }
 
 fn has_hypothesis(root: &Path) -> bool {
@@ -281,8 +322,24 @@ mod tests {
         assert_eq!(passed, 3); assert_eq!(failed, 2); assert_eq!(errors, 1);
     }
 
+    #[test]
+    fn parse_coverage_pct_extracts_total_line() {
+        let output = "Name    Stmts Miss  Cover\n---\napp.py   100    15    85%\nTOTAL    200    30    85%";
+        let pct = parse_coverage_pct(output);
+        assert_eq!(pct, Some(85.0));
+    }
+
+    #[test]
+    fn parse_coverage_pct_returns_none_when_missing() {
+        let pct = parse_coverage_pct("5 passed in 0.45s");
+        assert!(pct.is_none());
+    }
+
     proptest! {
         #[test]
         fn parse_pytest_never_panics(s in ".*") { let _ = parse_pytest_output(&s); }
+
+        #[test]
+        fn parse_coverage_never_panics(s in ".*") { let _ = parse_coverage_pct(&s); }
     }
 }

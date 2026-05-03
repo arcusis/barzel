@@ -26,7 +26,7 @@ impl TestRunner for SemgrepRunner {
     }
 
     fn skip_message(&self) -> &'static str {
-        "semgrep not installed — run `pip install semgrep` to enable SAST security scanning"
+        "semgrep not installed — install: `pip install semgrep` or `brew install semgrep` (runs on all languages)"
     }
 
     fn is_available(&self, _project: &ProjectInfo) -> bool {
@@ -34,10 +34,20 @@ impl TestRunner for SemgrepRunner {
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
+        use crate::detect::Language;
         let start = Instant::now();
         let root = std::path::Path::new(&project.root);
 
-        match self.proc.run("semgrep", &["--json", "--quiet", "--config", "auto", "."], root) {
+        // Use language-specific rulesets for higher-signal results
+        let ruleset = match project.language {
+            Language::Python => "p/python",
+            Language::TypeScript => "p/typescript",
+            Language::Rust => "p/rust",
+            Language::Go => "p/golang",
+            Language::Unknown => "p/default",
+        };
+
+        match self.proc.run("semgrep", &["--json", "--quiet", "--config", ruleset, "."], root) {
             Ok(out) => {
                 let findings = parse_semgrep_json(&out.stdout);
 
@@ -69,7 +79,7 @@ impl TestRunner for SemgrepRunner {
                     severity: Severity::Critical,
                     code: "SAST_EXECUTION_FAILED".to_string(),
                     message: format!("Failed to run semgrep: {}", e),
-                    reproduce_cmd: Some("semgrep --config=auto . 2>&1".to_string()),
+                    reproduce_cmd: Some(format!("semgrep --config={ruleset} . 2>&1")),
                     suggestion: Some("Install semgrep: `pip install semgrep`".to_string()),
                     ..Default::default()
                 }],
