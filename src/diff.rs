@@ -108,13 +108,22 @@ impl DiffContext {
             return true;
         }
         self.changed_files.iter().any(|p| {
-            // Root-level = no parent component, or parent is ""
+            // Root-level manifest check: no parent component (or parent is "")
             let is_root = p.parent().map(|par| par == Path::new("")).unwrap_or(true);
-            if !is_root { return false; }
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|name| ROOT_MANIFEST_NAMES.contains(&name))
-                .unwrap_or(false)
+            if is_root {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if ROOT_MANIFEST_NAMES.contains(&name) {
+                        return true;
+                    }
+                }
+            }
+
+            // Shared Semgrep rule check: .barzel/rules/*.yml or .barzel/rules/*.yaml at
+            // the repo root. A change here affects every package that inherits workspace
+            // rules, so it is unsafe to skip any member.
+            let is_root_barzel_rule = p.parent().map(|par| par == Path::new(".barzel/rules")).unwrap_or(false)
+                && p.extension().and_then(|e| e.to_str()).map(|e| e == "yml" || e == "yaml").unwrap_or(false);
+            is_root_barzel_rule
         })
     }
 
@@ -324,6 +333,56 @@ mod tests {
         assert!(!ctx.forces_full_run(), "nested package.json must not force full run");
         // But it DOES affect the package path
         assert!(ctx.affects_path(&pkg));
+    }
+
+    #[test]
+    fn root_barzel_rules_change_forces_full_run() {
+        // Changing .barzel/rules/*.yml at the repo root must force a full workspace run
+        // because workspace-root rules are inherited by every member package.
+        let dir = tempdir().unwrap();
+        git_init(dir.path());
+        fs::write(dir.path().join("Cargo.toml"), b"[workspace]\nmembers=[\"crates/a\"]\n").unwrap();
+        let rules = dir.path().join(".barzel/rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(rules.join("shared.yml"), b"rules: []").unwrap();
+        git_commit_all(dir.path(), "init");
+
+        let rev = String::from_utf8(
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
+
+        // Modify the shared rule file
+        fs::write(rules.join("shared.yml"), b"rules: [updated]").unwrap();
+        git_commit_all(dir.path(), "update shared rule");
+
+        let ctx = DiffContext::since(dir.path(), &rev).unwrap();
+        assert!(ctx.forces_full_run(),
+            ".barzel/rules/*.yml change at repo root must force a full workspace run");
+    }
+
+    #[test]
+    fn package_local_barzel_rules_do_not_force_full_run() {
+        // A .barzel/rules change inside a package subtree is handled via affects_path,
+        // not forces_full_run — it should only run that package, not everything.
+        let dir = tempdir().unwrap();
+        git_init(dir.path());
+        let pkg_rules = dir.path().join("packages/api/.barzel/rules");
+        fs::create_dir_all(&pkg_rules).unwrap();
+        fs::write(pkg_rules.join("api-rule.yml"), b"rules: []").unwrap();
+        git_commit_all(dir.path(), "init");
+
+        let rev = String::from_utf8(
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
+
+        fs::write(pkg_rules.join("api-rule.yml"), b"rules: [updated]").unwrap();
+        git_commit_all(dir.path(), "update package rule");
+
+        let ctx = DiffContext::since(dir.path(), &rev).unwrap();
+        assert!(!ctx.forces_full_run(),
+            "package-local .barzel/rules change must not force a full run (handled by affects_path)");
+        // But it does affect the package path
+        assert!(ctx.affects_path(&dir.path().join("packages/api")));
     }
 
     #[test]
