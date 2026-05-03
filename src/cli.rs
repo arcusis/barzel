@@ -7,8 +7,6 @@ use std::path::PathBuf;
 #[command(propagate_version = true)]
 pub struct Cli {
     /// Run in stdio JSON mode (for AI agents)
-    /// When enabled, the binary reads a single JSON request from stdin
-    /// and writes a single JSON response to stdout.
     #[arg(long, global = true)]
     pub stdio: bool,
 
@@ -26,18 +24,26 @@ pub enum Commands {
 
     /// Run the full verification suite (or specific layers)
     Run {
+        /// Target directory (defaults to current directory)
+        #[arg(long)]
+        path: Option<PathBuf>,
+
         /// Specific layers to run (logic, structural, hostile)
         #[arg(long, value_delimiter = ',')]
         layer: Option<Vec<String>>,
 
-        /// Fail fast on first critical finding
+        /// Skip cache and force re-run of all layers
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Stop on first critical finding
         #[arg(long)]
         fail_fast: bool,
     },
 
     /// Show the last report or a specific report
     Report {
-        /// Report ID or "latest"
+        /// Report ID prefix or "latest" (default: latest)
         id: Option<String>,
     },
 }

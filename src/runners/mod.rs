@@ -1,3 +1,9 @@
+pub mod cargo_fuzz;
+pub mod fastcheck;
+pub mod go_mutesting;
+pub mod gotest;
+pub mod kani;
 pub mod mutants;
 pub mod proptest;
 pub mod semgrep;
+pub mod stryker;

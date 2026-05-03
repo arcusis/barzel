@@ -31,4 +31,6 @@ M0 — Foundation (CLI skeleton, stdio protocol, project detection, `init` comma
 - [[barzel-m1-complete]]
 - [[barzel-m2-plan]]
 - [[barzel-m2-complete]]
+- [[barzel-m3-complete]]
+- [[barzel-m3-plan]]
 - [[barzel-roadmap]]

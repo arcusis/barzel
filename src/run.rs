@@ -1,410 +1,185 @@
-use crate::detect::detect_project;
+use crate::config::BarzelConfig;
+use crate::detect::{detect_project, Language};
 use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
-use crate::report::{BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
+use crate::runners::cargo_fuzz::CargoFuzzRunner;
+use crate::runners::fastcheck::FastCheckRunner;
+use crate::runners::go_mutesting::GoMutestingRunner;
+use crate::runners::gotest::GoTestRunner;
+use crate::runners::kani::KaniRunner;
+use crate::runners::mutants::MutantsRunner;
 use crate::runners::proptest::ProptestRunner;
+use crate::runners::semgrep::SemgrepRunner;
+use crate::runners::stryker::StrykerRunner;
+use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::path::Path;
-use std::process::Command;
-use std::time::Instant;
+use std::time::Duration;
 
-pub fn run_verification(target: Option<&Path>, layers: Option<Vec<String>>, stdio: bool) -> Result<()> {
+pub fn run_verification(
+    target: Option<&Path>,
+    layers: Option<Vec<String>>,
+    no_cache: bool,
+    fail_fast: bool,
+    stdio: bool,
+) -> Result<BarzelReport> {
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let project = detect_project(target_path)?;
+    let cfg = BarzelConfig::load_for_project(target_path);
 
     if !stdio {
         println!(
-            "{} Running verification on {} project",
+            "{} Verifying {} project at {}",
             "→".bright_blue(),
-            project.language.to_string().bright_green()
+            project.language.to_string().bright_green(),
+            target_path.display().to_string().bright_cyan()
         );
-    }
-
-    // Use the new plugin-based orchestrator
-    let proptest_runner = ProptestRunner;
-    let runners: Vec<&dyn crate::plugin::TestRunner> = vec![&proptest_runner];
-
-    let orchestrator = VerificationOrchestrator::new(runners);
-    let mut report = orchestrator.run(&project)?;
-
-    // For now, still run the old structural and hostile layers (will be migrated next)
-    let enabled_layers = layers.unwrap_or_else(|| {
-        vec!["structural".to_string(), "hostile".to_string()]
-    });
-
-    for layer_name in &enabled_layers {
-        let layer_start = Instant::now();
-
-        let layer_result = match layer_name.as_str() {
-            "structural" => run_structural_layer(&project, layer_start),
-            "hostile" => run_hostile_layer(&project, layer_start),
-            _ => LayerResult {
-                name: layer_name.clone(),
-                status: LayerStatus::Skipped,
-                findings: vec![Finding {
-                    severity: Severity::Info,
-                    code: "LAYER_UNKNOWN".to_string(),
-                    message: format!("Layer '{}' is not yet supported", layer_name),
-                    location: None,
-                }],
-                metrics: LayerMetrics {
-                    tests_run: 0,
-                    passed: 0,
-                    failed: 0,
-                    coverage: None,
-                    mutation_score: None,
-                },
-                duration_ms: 0,
-            },
-        };
-
-        report.add_layer(layer_result);
-    }
-
-    // Save the report
-    let report_path = report.save(target_path)?;
-
-    if !stdio {
         println!();
-        println!(
-            "{} Report saved to {}",
-            "✓".bright_green(),
-            report_path.display().to_string().bright_cyan()
-        );
-        println!(
-            "{} Status: {:?} | Findings: {}",
-            "→".bright_blue(),
-            report.status,
-            report.summary.total_findings
-        );
     }
 
-    Ok(())
-}
+    let threshold = cfg.layers.structural.mutation_threshold;
 
-#[allow(dead_code)]
-fn run_logic_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
-    let project_root = Path::new(&project.root);
-    let cargo_toml = project_root.join("Cargo.toml");
+    // Instantiate runners — all must be named locals so their borrows outlive `filtered`
+    let proptest = ProptestRunner;
+    let kani = KaniRunner;
+    let mutants = MutantsRunner { mutation_threshold: threshold };
+    let cargo_fuzz = CargoFuzzRunner;
+    let fastcheck = FastCheckRunner;
+    let stryker = StrykerRunner { mutation_threshold: threshold };
+    let gotest = GoTestRunner;
+    let go_mutesting = GoMutestingRunner { mutation_threshold: threshold };
+    let semgrep = SemgrepRunner;
 
-    // Check if the project uses proptest
-    let has_proptest = if cargo_toml.exists() {
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            content.contains("proptest")
-        } else {
-            false
-        }
-    } else {
-        false
+    let language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
+        Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
+        Language::TypeScript => vec![&fastcheck, &stryker, &semgrep],
+        Language::Go => vec![&gotest, &go_mutesting, &semgrep],
+        Language::Unknown => vec![&semgrep],
     };
 
-    if !has_proptest {
-        return LayerResult {
-            name: "logic".to_string(),
-            status: LayerStatus::Skipped,
-            findings: vec![Finding {
-                severity: Severity::Info,
-                code: "NO_PBT_FOUND".to_string(),
-                message: "No property-based tests detected. Add `proptest` to your dev-dependencies for invariant testing.".to_string(),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 0,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
+    let enabled = &cfg.layers.enabled;
+    let filtered: Vec<&dyn crate::plugin::TestRunner> = language_runners
+        .into_iter()
+        .filter(|runner| {
+            let layer_str = runner.layer().as_str();
+            let cli_ok = layers
+                .as_ref()
+                .map(|req| req.iter().any(|r| r == layer_str))
+                .unwrap_or(true);
+            let cfg_ok = enabled.iter().any(|e| e == layer_str);
+            cli_ok && cfg_ok
+        })
+        .collect();
+
+    let mut orchestrator = VerificationOrchestrator::new(filtered);
+    if no_cache {
+        orchestrator = orchestrator.with_no_cache();
+    }
+    if fail_fast {
+        orchestrator = orchestrator.with_fail_fast();
+    }
+
+    let report = if stdio {
+        orchestrator.run(&project)?
+    } else {
+        let pb = make_spinner();
+        let pb_cb = pb.clone();
+
+        let r = orchestrator.run_with_progress(&project, move |runner_name, layer_name| {
+            pb_cb.set_message(format!(
+                "  {:<12} [{:<14}]  running...",
+                layer_name, runner_name
+            ));
+            pb_cb.enable_steady_tick(Duration::from_millis(80));
+        })?;
+
+        pb.finish_and_clear();
+        r
+    };
+
+    if !stdio {
+        print_human_report(&report);
+        report.save(target_path)?;
+
+        let overall = match report.status {
+            ReportStatus::Pass => "PASS".bright_green().to_string(),
+            ReportStatus::Partial => "PARTIAL".yellow().to_string(),
+            ReportStatus::Fail => "FAIL".bright_red().to_string(),
         };
+        let report_path = target_path.join(".barzel").join("reports");
+        println!(
+            "{} {}  |  {} finding(s)  |  {}",
+            "→".bright_blue(),
+            overall,
+            report.summary.total_findings,
+            report_path.display().to_string().bright_cyan()
+        );
+    } else {
+        report.save(target_path)?;
     }
 
-    // Project has proptest — attempt to run tests
-    let output = Command::new("cargo")
-        .args(["test", "--quiet"])
-        .current_dir(project_root)
-        .output();
-
-    match output {
-        Ok(result) => {
-            let passed = result.status.success();
-            let status = if passed { LayerStatus::Pass } else { LayerStatus::Fail };
-            let message = if passed {
-                "Property-based tests executed successfully via cargo test"
-            } else {
-                "Some property-based tests failed (see cargo test output for details)"
-            };
-
-            LayerResult {
-                name: "logic".to_string(),
-                status,
-                findings: if passed {
-                    vec![]
-                } else {
-                    vec![Finding {
-                        severity: Severity::High,
-                        code: "PBT_FAILURE".to_string(),
-                        message: message.to_string(),
-                        location: None,
-                    }]
-                },
-                metrics: LayerMetrics {
-                    tests_run: 1, // We don't parse exact count yet
-                    passed: if passed { 1 } else { 0 },
-                    failed: if passed { 0 } else { 1 },
-                    coverage: None,
-                    mutation_score: None,
-                },
-                duration_ms: start.elapsed().as_millis() as u64,
-            }
-        }
-        Err(e) => LayerResult {
-            name: "logic".to_string(),
-            status: LayerStatus::Fail,
-            findings: vec![Finding {
-                severity: Severity::Critical,
-                code: "PBT_EXECUTION_FAILED".to_string(),
-                message: format!("Failed to execute cargo test: {}", e),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 1,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
-    }
+    Ok(report)
 }
 
-fn run_structural_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
-    let project_root = Path::new(&project.root);
-
-    // Check if cargo-mutants is available
-    let mutants_available = Command::new("cargo")
-        .args(["mutants", "--version"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !mutants_available {
-        return LayerResult {
-            name: "structural".to_string(),
-            status: LayerStatus::Skipped,
-            findings: vec![Finding {
-                severity: Severity::Info,
-                code: "NO_MUTATION_TESTING".to_string(),
-                message: "Mutation testing not available. Install `cargo-mutants` for high-quality test verification (aim for ≥95% mutation score).".to_string(),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 0,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
+fn print_human_report(report: &BarzelReport) {
+    for layer in &report.layers {
+        let status_str = match layer.status {
+            LayerStatus::Pass => "PASS   ".bright_green().to_string(),
+            LayerStatus::Fail => "FAIL   ".bright_red().to_string(),
+            LayerStatus::Partial => "PARTIAL".yellow().to_string(),
+            LayerStatus::Skipped => "SKIPPED".dimmed().to_string(),
         };
-    }
 
-    // cargo-mutants is available — run it (this can take a long time, so we do a quick check first)
-    // For M3 we run with --timeout 30s to keep it practical
-    let output = Command::new("cargo")
-        .args(["mutants", "--timeout", "30", "--no-shuffle"])
-        .current_dir(project_root)
-        .output();
-
-    match output {
-        Ok(result) => {
-            let output_str = String::from_utf8_lossy(&result.stdout);
-            let mutation_score = parse_mutation_score(&output_str);
-
-            let status = if let Some(score) = mutation_score {
-                if score >= 95.0 {
-                    LayerStatus::Pass
+        let detail = match layer.status {
+            LayerStatus::Pass => {
+                let m = &layer.metrics;
+                if m.tests_run > 0 {
+                    format!("{} tests · {}ms", m.tests_run, layer.duration_ms)
                 } else {
-                    LayerStatus::Partial
-                }
-            } else {
-                LayerStatus::Partial
-            };
-
-            let findings = if let Some(score) = mutation_score {
-                if score < 95.0 {
-                    vec![Finding {
-                        severity: Severity::High,
-                        code: "LOW_MUTATION_SCORE".to_string(),
-                        message: format!("Mutation score is {:.1}% (target ≥95%)", score),
-                        location: None,
-                    }]
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![Finding {
-                    severity: Severity::Info,
-                    code: "MUTATION_RUN_COMPLETE".to_string(),
-                    message: "Mutation testing completed. Check .cargo/mutants/ for detailed results.".to_string(),
-                    location: None,
-                }]
-            };
-
-            LayerResult {
-                name: "structural".to_string(),
-                status,
-                findings,
-                metrics: LayerMetrics {
-                    tests_run: 0,
-                    passed: 0,
-                    failed: 0,
-                    coverage: None,
-                    mutation_score,
-                },
-                duration_ms: start.elapsed().as_millis() as u64,
-            }
-        }
-        Err(e) => LayerResult {
-            name: "structural".to_string(),
-            status: LayerStatus::Fail,
-            findings: vec![Finding {
-                severity: Severity::Critical,
-                code: "MUTATION_EXECUTION_FAILED".to_string(),
-                message: format!("Failed to run cargo-mutants: {}", e),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 1,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
-    }
-}
-
-fn parse_mutation_score(output: &str) -> Option<f64> {
-    // Simple parser for cargo-mutants output
-    for line in output.lines() {
-        if line.contains("mutation score") {
-            if let Some(percent) = line.split('%').next() {
-                if let Some(num_str) = percent.split_whitespace().last() {
-                    if let Ok(score) = num_str.parse::<f64>() {
-                        return Some(score);
-                    }
+                    format!("{}ms", layer.duration_ms)
                 }
             }
-        }
-    }
-    None
-}
-
-fn run_hostile_layer(project: &crate::detect::ProjectInfo, start: Instant) -> LayerResult {
-    let project_root = Path::new(&project.root);
-
-    // Check if semgrep is available
-    let semgrep_available = Command::new("semgrep")
-        .args(["--version"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !semgrep_available {
-        return LayerResult {
-            name: "hostile".to_string(),
-            status: LayerStatus::Skipped,
-            findings: vec![Finding {
-                severity: Severity::Info,
-                code: "NO_SAST".to_string(),
-                message: "SAST not available. Install `semgrep` for automated security scanning.".to_string(),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 0,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
+            LayerStatus::Skipped => layer
+                .findings
+                .first()
+                .map(|f| f.message.clone())
+                .unwrap_or_default(),
+            LayerStatus::Fail | LayerStatus::Partial => {
+                let count = layer.findings.len();
+                format!("{} finding{}", count, if count == 1 { "" } else { "s" })
+            }
         };
-    }
 
-    // Run semgrep with default rules (quick scan)
-    let output = Command::new("semgrep")
-        .args(["--json", "--quiet", "."])
-        .current_dir(project_root)
-        .output();
+        println!(
+            "  {:<12} [{:<14}]  {}  {}",
+            layer.name.bright_white(),
+            layer.runner.dimmed(),
+            status_str,
+            detail.dimmed()
+        );
 
-    match output {
-        Ok(result) => {
-            let output_str = String::from_utf8_lossy(&result.stdout);
-            let findings = parse_semgrep_findings(&output_str);
-
-            let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
-                LayerStatus::Fail
-            } else if !findings.is_empty() {
-                LayerStatus::Partial
-            } else {
-                LayerStatus::Pass
-            };
-
-            LayerResult {
-                name: "hostile".to_string(),
-                status,
-                findings,
-                metrics: LayerMetrics {
-                    tests_run: 0,
-                    passed: 0,
-                    failed: 0,
-                    coverage: None,
-                    mutation_score: None,
-                },
-                duration_ms: start.elapsed().as_millis() as u64,
+        // Show high/critical findings inline with reproduce command
+        for finding in layer
+            .findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Critical | Severity::High))
+        {
+            println!("    {} {}", "↳".dimmed(), finding.message.dimmed());
+            if let Some(cmd) = &finding.reproduce_cmd {
+                println!("      {} {}", "run:".dimmed(), cmd.bright_cyan().dimmed());
             }
         }
-        Err(e) => LayerResult {
-            name: "hostile".to_string(),
-            status: LayerStatus::Fail,
-            findings: vec![Finding {
-                severity: Severity::Critical,
-                code: "SAST_EXECUTION_FAILED".to_string(),
-                message: format!("Failed to run semgrep: {}", e),
-                location: None,
-            }],
-            metrics: LayerMetrics {
-                tests_run: 0,
-                passed: 0,
-                failed: 1,
-                coverage: None,
-                mutation_score: None,
-            },
-            duration_ms: start.elapsed().as_millis() as u64,
-        },
     }
+
+    println!();
 }
 
-fn parse_semgrep_findings(output: &str) -> Vec<Finding> {
-    // Very simple parser — in production we'd use proper JSON deserialization
-    let mut findings = Vec::new();
-
-    if output.contains("\"results\":[]") || output.is_empty() {
-        return findings;
-    }
-
-    // If there are results, create a generic finding
-    if output.contains("\"results\"") {
-        findings.push(Finding {
-            severity: Severity::Medium,
-            code: "SAST_FINDINGS".to_string(),
-            message: "Semgrep found potential security issues. Run `semgrep .` for details.".to_string(),
-            location: None,
-        });
-    }
-
-    findings
+fn make_spinner() -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.blue} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    pb
 }

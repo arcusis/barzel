@@ -33,7 +33,8 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
     let root_str = root.to_string_lossy().to_string();
 
     if root.join("Cargo.toml").exists() {
-        let package_name = extract_rust_package_name(&root);
+        let content = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+        let package_name = extract_package_name_from_content(&content);
         return Ok(ProjectInfo {
             language: Language::Rust,
             root: root_str,
@@ -43,20 +44,34 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
     }
 
     if root.join("package.json").exists() {
+        let pkg_content = std::fs::read_to_string(root.join("package.json")).unwrap_or_default();
+        let package_name = extract_json_string_field(&pkg_content, "name");
         return Ok(ProjectInfo {
             language: Language::TypeScript,
             root: root_str,
-            has_tests: root.join("tests").exists() || root.join("__tests__").exists(),
-            package_name: None,
+            has_tests: root.join("tests").exists()
+                || root.join("__tests__").exists()
+                || root.join("src").join("__tests__").exists(),
+            package_name,
         });
     }
 
     if root.join("go.mod").exists() {
+        let mod_content = std::fs::read_to_string(root.join("go.mod")).unwrap_or_default();
+        let package_name = extract_go_module_name(&mod_content);
+        let has_tests = std::fs::read_dir(root.join("src"))
+            .or_else(|_| std::fs::read_dir(root))
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    e.file_name().to_string_lossy().ends_with("_test.go")
+                })
+            })
+            .unwrap_or(false);
         return Ok(ProjectInfo {
             language: Language::Go,
             root: root_str,
-            has_tests: root.join("*_test.go").exists(),
-            package_name: None,
+            has_tests,
+            package_name,
         });
     }
 
@@ -68,14 +83,42 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
     })
 }
 
-fn extract_rust_package_name(root: &Path) -> Option<String> {
-    let cargo_toml = root.join("Cargo.toml");
-    if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("name") {
-                if let Some(name) = line.split('=').nth(1) {
-                    return Some(name.trim().trim_matches('"').trim_matches('\'').to_string());
+fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
+    let search = format!("\"{}\"", field);
+    let pos = json.find(&search)?;
+    let after_key = &json[pos + search.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = after_key[colon_pos + 1..].trim_start();
+    if let Some(value) = after_colon.strip_prefix('"') {
+        let end = value.find('"')?;
+        let name = value[..end].to_string();
+        if name.is_empty() { None } else { Some(name) }
+    } else {
+        None
+    }
+}
+
+fn extract_go_module_name(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("module ") {
+            let name = rest.trim().to_string();
+            if !name.is_empty() {
+                return Some(name.split('/').next_back().unwrap_or(&name).to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_package_name_from_content(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("name") {
+            if let Some(value) = line.split('=').nth(1) {
+                let name = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !name.is_empty() {
+                    return Some(name);
                 }
             }
         }
@@ -86,13 +129,18 @@ fn extract_rust_package_name(root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
     fn detects_rust_project() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test-crate\"").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test-crate\"",
+        )
+        .unwrap();
 
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.language, Language::Rust);
@@ -104,5 +152,42 @@ mod tests {
         let dir = tempdir().unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.language, Language::Unknown);
+    }
+
+    #[test]
+    fn extracts_package_name_basic() {
+        let content = "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"";
+        assert_eq!(
+            extract_package_name_from_content(content),
+            Some("my-crate".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_returns_none_for_empty() {
+        assert_eq!(extract_package_name_from_content(""), None);
+    }
+
+    proptest! {
+        #[test]
+        fn extract_never_panics(content in ".*") {
+            let _ = extract_package_name_from_content(&content);
+        }
+
+        #[test]
+        fn detect_always_returns_result(path_suffix in "[a-z]{1,8}") {
+            let dir = tempdir().unwrap();
+            let sub = dir.path().join(path_suffix);
+            // detect on a non-existent path falls back gracefully
+            let result = detect_project(&sub);
+            prop_assert!(result.is_ok());
+        }
+
+        #[test]
+        fn extract_with_explicit_name_round_trips(name in "[a-z][a-z0-9-]{0,20}") {
+            let content = format!("[package]\nname = \"{name}\"");
+            let extracted = extract_package_name_from_content(&content);
+            prop_assert_eq!(extracted, Some(name));
+        }
     }
 }

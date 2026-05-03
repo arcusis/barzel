@@ -14,9 +14,13 @@ use chrono::Utc;
 use clap::Parser;
 use cli::{Cli, Commands};
 use owo_colors::OwoColorize;
+use report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::ExitCode;
 use uuid::Uuid;
+
+// ── Stdio protocol ────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct StdioRequest {
@@ -60,16 +64,14 @@ fn create_response(
 fn handle_stdio() -> ExitCode {
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
-        let resp = create_response("error", None, None, Some(format!("failed to read stdin: {}", e)));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        emit_error(None, format!("failed to read stdin: {}", e));
         return ExitCode::from(1);
     }
 
     let req: StdioRequest = match serde_json::from_str(&input) {
         Ok(r) => r,
         Err(e) => {
-            let resp = create_response("error", None, None, Some(format!("invalid JSON request: {}", e)));
-            println!("{}", serde_json::to_string(&resp).unwrap());
+            emit_error(None, format!("invalid JSON request: {}", e));
             return ExitCode::from(1);
         }
     };
@@ -78,58 +80,229 @@ fn handle_stdio() -> ExitCode {
 
     match req.command.as_str() {
         "init" => {
-            let path = req.project_path.as_deref().map(std::path::Path::new);
+            let path = req.project_path.as_deref().map(Path::new);
             match init::run_init(path, true) {
                 Ok(()) => {
-                    let data = serde_json::json!({ "message": "project initialized" });
-                    let resp = create_response("success", request_id, Some(data), None);
+                    let resp = create_response(
+                        "success",
+                        request_id,
+                        Some(serde_json::json!({ "message": "project initialized" })),
+                        None,
+                    );
                     println!("{}", serde_json::to_string(&resp).unwrap());
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    let resp = create_response("error", request_id, None, Some(e.to_string()));
-                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    emit_error(request_id, e.to_string());
                     ExitCode::from(1)
                 }
             }
         }
+
         "run" => {
-            let path = req.project_path.as_deref().map(std::path::Path::new);
-            match run::run_verification(path, req.layers, true) {
-                Ok(()) => {
-                    let data = serde_json::json!({ "message": "verification complete" });
+            let path = req.project_path.as_deref().map(Path::new);
+            match run::run_verification(path, req.layers, false, false, true) {
+                Ok(report) => {
+                    let exit_code = report_exit_code(&report);
+                    let data = build_run_data(&report);
                     let resp = create_response("success", request_id, Some(data), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
-                    ExitCode::SUCCESS
+                    exit_code
                 }
                 Err(e) => {
-                    let resp = create_response("error", request_id, None, Some(e.to_string()));
-                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    emit_error(request_id, e.to_string());
                     ExitCode::from(1)
                 }
             }
         }
+
         other => {
-            let resp = create_response(
-                "error",
-                request_id,
-                None,
-                Some(format!("unknown command: {}", other)),
-            );
-            println!("{}", serde_json::to_string(&resp).unwrap());
+            emit_error(request_id, format!("unknown command: {}", other));
             ExitCode::from(1)
         }
     }
 }
 
+/// Build the structured data payload an AI agent receives after `run`.
+fn build_run_data(report: &BarzelReport) -> serde_json::Value {
+    let passed = matches!(report.status, ReportStatus::Pass);
+
+    // Flatten all non-info findings into a prioritised action list
+    let action_items: Vec<serde_json::Value> = report
+        .layers
+        .iter()
+        .flat_map(|layer| {
+            layer.findings.iter().filter_map(move |f| {
+                if matches!(f.severity, Severity::Info) {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "priority": severity_priority(&f.severity),
+                    "layer":    layer.name,
+                    "runner":   layer.runner,
+                    "severity": f.severity,
+                    "code":     f.code,
+                    "message":  f.message,
+                    "location": f.location,
+                    "reproduce_cmd": f.reproduce_cmd,
+                    "suggestion":    f.suggestion,
+                }))
+            })
+        })
+        .collect();
+
+    // Per-layer summary for quick parsing
+    let layers: Vec<serde_json::Value> = report
+        .layers
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "name":     l.name,
+                "runner":   l.runner,
+                "status":   l.status,
+                "tests_run": l.metrics.tests_run,
+                "passed":    l.metrics.passed,
+                "failed":    l.metrics.failed,
+                "mutation_score": l.metrics.mutation_score,
+                "duration_ms": l.duration_ms,
+                "findings_count": l.findings.len(),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "passed":          passed,
+        "overall_status":  report.status,
+        "total_findings":  report.summary.total_findings,
+        "critical":        report.summary.critical,
+        "high":            report.summary.high,
+        "medium":          report.summary.medium,
+        "low":             report.summary.low,
+        "layers":          layers,
+        "action_items":    action_items,
+        "report_id":       report.id,
+        "timestamp":       report.timestamp,
+    })
+}
+
+fn severity_priority(s: &Severity) -> u8 {
+    match s {
+        Severity::Critical => 1,
+        Severity::High => 2,
+        Severity::Medium => 3,
+        Severity::Low => 4,
+        Severity::Info => 5,
+    }
+}
+
+fn report_exit_code(report: &BarzelReport) -> ExitCode {
+    match report.status {
+        ReportStatus::Pass => ExitCode::SUCCESS,
+        ReportStatus::Partial => ExitCode::from(2),
+        ReportStatus::Fail => ExitCode::from(1),
+    }
+}
+
+fn emit_error(request_id: Option<String>, message: String) {
+    let resp = create_response("error", request_id, None, Some(message));
+    println!("{}", serde_json::to_string(&resp).unwrap());
+}
+
+// ── Report command ────────────────────────────────────────────────────────────
+
+fn cmd_report(id: Option<String>) -> error::Result<()> {
+    let base = Path::new(".");
+
+    let report = match &id {
+        Some(id_str) if id_str != "latest" => {
+            report::BarzelReport::load_by_id(base, id_str)?
+        }
+        _ => report::BarzelReport::load_latest(base)?,
+    };
+
+    let r = match report {
+        Some(r) => r,
+        None => {
+            println!(
+                "{} No reports found in .barzel/reports/",
+                "→".bright_blue()
+            );
+            println!("Run `barzel run` first to generate a report.");
+            return Ok(());
+        }
+    };
+
+    let overall = match r.status {
+        ReportStatus::Pass => "PASS".bright_green().to_string(),
+        ReportStatus::Partial => "PARTIAL".yellow().to_string(),
+        ReportStatus::Fail => "FAIL".bright_red().to_string(),
+    };
+
+    println!(
+        "{} Report {} — {} — {}",
+        "→".bright_blue(),
+        (&r.id[..8]).dimmed(),
+        r.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+        overall
+    );
+    println!(
+        "   Project: {} ({})",
+        r.project.package_name.as_deref().unwrap_or("unknown"),
+        r.project.language
+    );
+    println!();
+
+    for layer in &r.layers {
+        let status_str = match layer.status {
+            LayerStatus::Pass => "PASS   ".bright_green().to_string(),
+            LayerStatus::Fail => "FAIL   ".bright_red().to_string(),
+            LayerStatus::Partial => "PARTIAL".yellow().to_string(),
+            LayerStatus::Skipped => "SKIPPED".dimmed().to_string(),
+        };
+
+        println!(
+            "  {:<12} [{:<14}]  {}",
+            layer.name.bright_white(),
+            layer.runner.dimmed(),
+            status_str
+        );
+
+        for finding in &layer.findings {
+            let sev = match finding.severity {
+                Severity::Critical => "[CRITICAL]".bright_red().to_string(),
+                Severity::High => "[HIGH]    ".bright_yellow().to_string(),
+                Severity::Medium => "[MEDIUM]  ".yellow().to_string(),
+                Severity::Low => "[LOW]     ".bright_blue().to_string(),
+                Severity::Info => "[INFO]    ".dimmed().to_string(),
+            };
+            println!("    {} {}", sev, finding.message);
+            if let Some(cmd) = &finding.reproduce_cmd {
+                println!("      run: {}", cmd.dimmed());
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "   {} finding(s): {} critical, {} high, {} medium, {} low",
+        r.summary.total_findings,
+        r.summary.critical,
+        r.summary.high,
+        r.summary.medium,
+        r.summary.low
+    );
+
+    Ok(())
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 fn main() -> ExitCode {
-    // Fast-path for AI agents
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.iter().any(|a| a == "--stdio") {
         return handle_stdio();
     }
 
-    // Normal CLI
     let cli = Cli::parse();
 
     let command = match cli.command {
@@ -143,29 +316,31 @@ fn main() -> ExitCode {
         }
     };
 
-    let result = match command {
-        Commands::Init { path } => init::run_init(path.as_deref(), false),
+    match command {
+        Commands::Init { path } => match init::run_init(path.as_deref(), false) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{} {}", "Error:".bright_red(), e);
+                ExitCode::from(1)
+            }
+        },
 
-        Commands::Run { layer, fail_fast: _ } => {
-            // Note: clap Run struct doesn't have path in this version — using current dir
-            run::run_verification(None, layer, false)
+        Commands::Run { path, layer, no_cache, fail_fast } => {
+            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false) {
+                Ok(report) => report_exit_code(&report),
+                Err(e) => {
+                    eprintln!("{} {}", "Error:".bright_red(), e);
+                    ExitCode::from(1)
+                }
+            }
         }
 
-        Commands::Report { id: _ } => {
-            println!(
-                "{} Report command not yet fully implemented (M1 foundation only)",
-                "→".bright_blue()
-            );
-            println!("Latest report would be shown here.");
-            Ok(())
-        }
-    };
-
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{} {}", "Error:".bright_red(), e);
-            ExitCode::from(1)
-        }
+        Commands::Report { id } => match cmd_report(id) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{} {}", "Error:".bright_red(), e);
+                ExitCode::from(1)
+            }
+        },
     }
 }

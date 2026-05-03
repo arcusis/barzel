@@ -2,6 +2,13 @@
 /target
 **/*.rs.bk
 
+# cargo-mutants output
+/mutants.out/
+/mutants.out.old/
+
+# Claude Code internal
+.claude/scheduled_tasks.lock
+
 # Barzel generated files
 .barzel/
 .barzel.toml
