@@ -145,6 +145,7 @@ mod tests {
             root: root.to_string_lossy().to_string(),
             has_tests: false,
             package_name: Some("test".to_string()),
+            frameworks: Default::default(),
         }
     }
 

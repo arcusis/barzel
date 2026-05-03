@@ -1,12 +1,37 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use std::path::Path;
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
-pub struct CargoFuzzRunner;
+pub struct CargoFuzzRunner {
+    proc: Arc<dyn SubprocessRunner>,
+}
+
+impl Default for CargoFuzzRunner {
+    fn default() -> Self {
+        Self { proc: Arc::new(OsProcessRunner) }
+    }
+}
+
+impl CargoFuzzRunner {
+    fn list_fuzz_targets(&self, root: &Path) -> Vec<String> {
+        match self.proc.run("cargo", &["fuzz", "list"], root) {
+            Ok(out) if out.success => out
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect(),
+            // Fallback: scan fuzz/fuzz_targets/ directory
+            _ => scan_target_directory(root),
+        }
+    }
+}
 
 impl TestRunner for CargoFuzzRunner {
     fn name(&self) -> &'static str {
@@ -32,11 +57,7 @@ impl TestRunner for CargoFuzzRunner {
             return false;
         }
         // cargo-fuzz must be installed
-        Command::new("cargo")
-            .args(["fuzz", "--version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.proc.is_available("cargo", &["fuzz", "--version"])
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
@@ -44,7 +65,7 @@ impl TestRunner for CargoFuzzRunner {
         let root = Path::new(&project.root);
 
         // List available fuzz targets
-        let targets = list_fuzz_targets(root);
+        let targets = self.list_fuzz_targets(root);
 
         // Scan for crash artifacts (existing crashes from previous runs)
         let crashes = find_crash_artifacts(root);
@@ -117,27 +138,6 @@ impl TestRunner for CargoFuzzRunner {
     }
 }
 
-fn list_fuzz_targets(root: &Path) -> Vec<String> {
-    // cargo fuzz list is the canonical way
-    let output = Command::new("cargo")
-        .args(["fuzz", "list"])
-        .current_dir(root)
-        .output();
-
-    match output {
-        Ok(result) if result.status.success() => {
-            String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        }
-        // Fallback: scan fuzz/fuzz_targets/ directory
-        _ => scan_target_directory(root),
-    }
-}
-
 fn scan_target_directory(root: &Path) -> Vec<String> {
     let targets_dir = root.join("fuzz").join("fuzz_targets");
     let Ok(entries) = std::fs::read_dir(&targets_dir) else {
@@ -194,24 +194,132 @@ fn infer_target_from_artifact(artifact_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use tempfile::tempdir;
+
+    fn rust_info(root: &str) -> ProjectInfo {
+        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+    }
+
+    fn runner_with(mock: MockProcessRunner) -> CargoFuzzRunner {
+        CargoFuzzRunner { proc: Arc::new(mock) }
+    }
 
     // ── runner metadata ───────────────────────────────────────────────────────
 
     #[test]
     fn name_is_cargo_fuzz() {
-        assert_eq!(CargoFuzzRunner.name(), "cargo-fuzz");
+        assert_eq!(CargoFuzzRunner::default().name(), "cargo-fuzz");
     }
 
     #[test]
     fn layer_is_hostile() {
-        assert!(matches!(CargoFuzzRunner.layer(), crate::plugin::Layer::Hostile));
+        assert!(matches!(CargoFuzzRunner::default().layer(), crate::plugin::Layer::Hostile));
     }
 
     #[test]
     fn skip_message_nonempty() {
-        assert!(!CargoFuzzRunner.skip_message().is_empty());
-        assert!(CargoFuzzRunner.skip_message().contains("fuzz"));
+        assert!(!CargoFuzzRunner::default().skip_message().is_empty());
+        assert!(CargoFuzzRunner::default().skip_message().contains("fuzz"));
+    }
+
+    // ── is_available ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn not_available_for_go() {
+        let dir = tempdir().unwrap();
+        let info = ProjectInfo { language: Language::Go, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(!CargoFuzzRunner::default().is_available(&info));
+    }
+
+    #[test]
+    fn not_available_when_no_fuzz_dir() {
+        let dir = tempdir().unwrap();
+        let info = rust_info(&dir.path().to_string_lossy());
+        let r = runner_with(MockProcessRunner::passing("cargo-fuzz 0.12"));
+        assert!(!r.is_available(&info));
+    }
+
+    #[test]
+    fn not_available_when_cargo_fuzz_missing() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("fuzz")).unwrap();
+        let info = rust_info(&dir.path().to_string_lossy());
+        let r = runner_with(MockProcessRunner::unavailable());
+        assert!(!r.is_available(&info));
+    }
+
+    #[test]
+    fn available_when_fuzz_dir_exists_and_cargo_fuzz_present() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("fuzz")).unwrap();
+        let info = rust_info(&dir.path().to_string_lossy());
+        let r = runner_with(MockProcessRunner::passing("cargo-fuzz 0.12"));
+        assert!(r.is_available(&info));
+    }
+
+    // ── run() with mock ───────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_with_targets_and_no_crashes() {
+        let dir = tempdir().unwrap();
+        // Set up fuzz targets dir for fallback
+        let targets_dir = dir.path().join("fuzz").join("fuzz_targets");
+        std::fs::create_dir_all(&targets_dir).unwrap();
+        std::fs::write(targets_dir.join("fuzz_json.rs"), b"#![no_main]").unwrap();
+
+        // Mock returns the target list from `cargo fuzz list`
+        let result = runner_with(MockProcessRunner::passing("fuzz_json"))
+            .run(&rust_info(&dir.path().to_string_lossy()))
+            .unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+    }
+
+    #[test]
+    fn run_returns_fail_when_crash_artifacts_exist() {
+        let dir = tempdir().unwrap();
+        let crash_dir = dir.path().join("fuzz").join("artifacts").join("fuzz_target_1");
+        std::fs::create_dir_all(&crash_dir).unwrap();
+        std::fs::write(crash_dir.join("crash-deadbeef"), b"\x00").unwrap();
+
+        let result = runner_with(MockProcessRunner::passing("fuzz_target_1"))
+            .run(&rust_info(&dir.path().to_string_lossy()))
+            .unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn run_returns_skipped_when_no_targets() {
+        let dir = tempdir().unwrap();
+        // Mock returns empty list; no fallback targets either
+        let result = runner_with(MockProcessRunner::passing(""))
+            .run(&rust_info(&dir.path().to_string_lossy()))
+            .unwrap();
+        assert!(matches!(result.status, LayerStatus::Skipped));
+    }
+
+    // ── list_fuzz_targets (via method) ────────────────────────────────────────
+
+    #[test]
+    fn list_uses_cargo_fuzz_output_when_successful() {
+        let dir = tempdir().unwrap();
+        let r = runner_with(MockProcessRunner::passing("fuzz_json\nfuzz_http\n"));
+        let targets = r.list_fuzz_targets(dir.path());
+        assert_eq!(targets, vec!["fuzz_json", "fuzz_http"]);
+    }
+
+    #[test]
+    fn list_falls_back_to_directory_scan_on_failure() {
+        let dir = tempdir().unwrap();
+        let targets_dir = dir.path().join("fuzz").join("fuzz_targets");
+        std::fs::create_dir_all(&targets_dir).unwrap();
+        std::fs::write(targets_dir.join("fuzz_json.rs"), b"#![no_main]").unwrap();
+
+        let r = runner_with(MockProcessRunner::failing(""));
+        let targets = r.list_fuzz_targets(dir.path());
+        assert_eq!(targets, vec!["fuzz_json"]);
     }
 
     // ── infer_target_from_artifact ────────────────────────────────────────────

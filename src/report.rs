@@ -218,6 +218,7 @@ mod tests {
             root: "/tmp".to_string(),
             has_tests: true,
             package_name: Some("test".to_string()),
+            frameworks: Default::default(),
         }
     }
 

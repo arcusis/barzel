@@ -3,13 +3,16 @@ use crate::detect::{detect_project, Language};
 use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
+use crate::runners::aisec::AiSecRunner;
 use crate::runners::cargo_fuzz::CargoFuzzRunner;
 use crate::runners::fastcheck::FastCheckRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
 use crate::runners::gotest::GoTestRunner;
 use crate::runners::kani::KaniRunner;
 use crate::runners::mutants::MutantsRunner;
+use crate::runners::playwright::PlaywrightRunner;
 use crate::runners::proptest::ProptestRunner;
+use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
 use crate::runners::stryker::StrykerRunner;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -41,22 +44,31 @@ pub fn run_verification(
     let threshold = cfg.layers.structural.mutation_threshold;
 
     // Instantiate runners — all must be named locals so their borrows outlive `filtered`
-    let proptest = ProptestRunner;
-    let kani = KaniRunner;
-    let mutants = MutantsRunner { mutation_threshold: threshold };
-    let cargo_fuzz = CargoFuzzRunner;
-    let fastcheck = FastCheckRunner;
-    let stryker = StrykerRunner { mutation_threshold: threshold };
-    let gotest = GoTestRunner;
-    let go_mutesting = GoMutestingRunner { mutation_threshold: threshold };
-    let semgrep = SemgrepRunner;
+    let proptest = ProptestRunner::default();
+    let kani = KaniRunner::default();
+    let mutants = MutantsRunner::with_threshold(threshold);
+    let cargo_fuzz = CargoFuzzRunner::default();
+    let fastcheck = FastCheckRunner::default();
+    let stryker = StrykerRunner::with_threshold(threshold);
+    let gotest = GoTestRunner::default();
+    let go_mutesting = GoMutestingRunner::with_threshold(threshold);
+    let semgrep = SemgrepRunner::default();
+    let pytest = PytestRunner::default();
+    let aisec = AiSecRunner::default();
+    let playwright = PlaywrightRunner::default();
 
-    let language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
+    let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
-        Language::TypeScript => vec![&fastcheck, &stryker, &semgrep],
+        Language::TypeScript => vec![&fastcheck, &stryker, &playwright, &semgrep],
+        Language::Python => vec![&pytest, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
     };
+
+    // Add AI security runner for any language that has AI deps
+    if project.frameworks.has_ai_deps {
+        language_runners.push(&aisec);
+    }
 
     let enabled = &cfg.layers.enabled;
     let filtered: Vec<&dyn crate::plugin::TestRunner> = language_runners

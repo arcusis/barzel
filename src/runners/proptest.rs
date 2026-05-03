@@ -1,20 +1,25 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
-use std::process::Command;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
-pub struct ProptestRunner;
+pub struct ProptestRunner {
+    proc: Arc<dyn SubprocessRunner>,
+}
+
+impl Default for ProptestRunner {
+    fn default() -> Self {
+        Self { proc: Arc::new(OsProcessRunner) }
+    }
+}
 
 impl TestRunner for ProptestRunner {
-    fn name(&self) -> &'static str {
-        "proptest"
-    }
-
-    fn layer(&self) -> Layer {
-        Layer::Logic
-    }
+    fn name(&self) -> &'static str { "proptest" }
+    fn layer(&self) -> Layer { Layer::Logic }
 
     fn skip_message(&self) -> &'static str {
         "No property-based tests found — add `proptest` to dev-dependencies for invariant testing"
@@ -24,38 +29,27 @@ impl TestRunner for ProptestRunner {
         if project.language != crate::detect::Language::Rust {
             return false;
         }
-        let cargo_toml = std::path::Path::new(&project.root).join("Cargo.toml");
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            content.contains("proptest")
-        } else {
-            false
-        }
+        let cargo_toml = Path::new(&project.root).join("Cargo.toml");
+        std::fs::read_to_string(&cargo_toml)
+            .map(|c| c.contains("proptest"))
+            .unwrap_or(false)
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
         let start = Instant::now();
-        let project_root = std::path::Path::new(&project.root);
+        let root = Path::new(&project.root);
 
-        let output = Command::new("cargo")
-            .args(["test"])
-            .current_dir(project_root)
-            .output();
-
-        match output {
-            Ok(result) => {
-                let stdout = String::from_utf8_lossy(&result.stdout);
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                let combined = format!("{}\n{}", stdout, stderr);
-
-                let passed = result.status.success();
-                let status = if passed { LayerStatus::Pass } else { LayerStatus::Fail };
+        match self.proc.run("cargo", &["test"], root) {
+            Ok(out) => {
+                let combined = out.combined();
                 let (tests_run, tests_passed, tests_failed) = parse_test_counts(&combined);
+                let status = if out.success { LayerStatus::Pass } else { LayerStatus::Fail };
 
                 Ok(LayerResult {
                     name: "logic".to_string(),
                     runner: "proptest".to_string(),
                     status,
-                    findings: if passed {
+                    findings: if out.success {
                         vec![]
                     } else {
                         vec![Finding {
@@ -89,20 +83,17 @@ impl TestRunner for ProptestRunner {
                     code: "PBT_EXECUTION_ERROR".to_string(),
                     message: format!("Failed to run cargo test: {}", e),
                     reproduce_cmd: Some("cargo test 2>&1".to_string()),
-                    suggestion: Some("Ensure `cargo` is in PATH and the project compiles: `cargo check`.".to_string()),
+                    suggestion: Some("Ensure `cargo` is in PATH and the project compiles.".to_string()),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics {
-                    failed: 1,
-                    ..Default::default()
-                },
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
     }
 }
 
-fn parse_test_counts(output: &str) -> (u64, u64, u64) {
+pub fn parse_test_counts(output: &str) -> (u64, u64, u64) {
     for line in output.lines() {
         if line.starts_with("test result:") {
             let passed = extract_count(line, " passed");
@@ -113,7 +104,7 @@ fn parse_test_counts(output: &str) -> (u64, u64, u64) {
     (1, 1, 0)
 }
 
-fn extract_count(line: &str, label: &str) -> u64 {
+pub fn extract_count(line: &str, label: &str) -> u64 {
     if let Some(idx) = line.find(label) {
         let before = &line[..idx];
         if let Some(num_str) = before.split_whitespace().last() {
@@ -127,107 +118,115 @@ fn extract_count(line: &str, label: &str) -> u64 {
 mod tests {
     use super::*;
     use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
 
-    // ── runner metadata ───────────────────────────────────────────────────────
-
-    #[test]
-    fn name_is_proptest() {
-        assert_eq!(ProptestRunner.name(), "proptest");
+    fn info(language: Language) -> ProjectInfo {
+        ProjectInfo { language, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
     }
 
-    #[test]
-    fn layer_is_logic() {
-        assert!(matches!(ProptestRunner.layer(), crate::plugin::Layer::Logic));
+    fn runner_with(mock: MockProcessRunner) -> ProptestRunner {
+        ProptestRunner { proc: Arc::new(mock) }
     }
+
+    // ── metadata ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_proptest() { assert_eq!(ProptestRunner::default().name(), "proptest"); }
+
+    #[test]
+    fn layer_is_logic() { assert!(matches!(ProptestRunner::default().layer(), Layer::Logic)); }
 
     #[test]
     fn skip_message_mentions_proptest() {
-        let msg = ProptestRunner.skip_message();
-        assert!(!msg.is_empty());
-        assert!(msg.contains("proptest"));
+        assert!(ProptestRunner::default().skip_message().contains("proptest"));
     }
 
     // ── is_available ──────────────────────────────────────────────────────────
 
-    fn info(language: Language, root: &str) -> ProjectInfo {
-        ProjectInfo { language, root: root.to_string(), has_tests: false, package_name: None }
-    }
-
     #[test]
     fn not_available_for_typescript() {
-        assert!(!ProptestRunner.is_available(&info(Language::TypeScript, "/tmp")));
+        assert!(!ProptestRunner::default().is_available(&info(Language::TypeScript)));
     }
 
     #[test]
-    fn not_available_for_go() {
-        assert!(!ProptestRunner.is_available(&info(Language::Go, "/tmp")));
-    }
-
-    #[test]
-    fn not_available_when_proptest_not_in_cargo_toml() {
+    fn not_available_when_proptest_missing() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
-        assert!(!ProptestRunner.is_available(&info(Language::Rust, &dir.path().to_string_lossy())));
+        std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(!ProptestRunner::default().is_available(&i));
     }
 
     #[test]
-    fn available_when_proptest_in_cargo_toml() {
+    fn available_when_proptest_in_toml() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            b"[dev-dependencies]\nproptest = \"1.0\"",
-        )
-        .unwrap();
-        assert!(ProptestRunner.is_available(&info(Language::Rust, &dir.path().to_string_lossy())));
+        std::fs::write(dir.path().join("Cargo.toml"), b"[dev-dependencies]\nproptest=\"1.0\"").unwrap();
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(ProptestRunner::default().is_available(&i));
+    }
+
+    // ── run() with mock subprocess ────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_on_success() {
+        let stdout = "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Rust)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert_eq!(result.metrics.tests_run, 5);
+        assert_eq!(result.metrics.passed, 5);
+        assert_eq!(result.metrics.failed, 0);
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn run_returns_fail_on_test_failure() {
+        let stdout = "test result: FAILED. 3 passed; 2 failed; 0 ignored";
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&info(Language::Rust)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.metrics.failed, 2);
+        assert_eq!(result.findings[0].severity, Severity::High);
+        assert!(result.findings[0].reproduce_cmd.is_some());
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cargo not found"))
+            }
+        }
+        let runner = ProptestRunner { proc: Arc::new(BrokenProc) };
+        let result = runner.run(&info(Language::Rust)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+        assert_eq!(result.metrics.failed, 1);
     }
 
     // ── parse_test_counts ─────────────────────────────────────────────────────
 
     #[test]
-    fn parses_standard_summary_line() {
-        let line = "test result: ok. 5 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s";
-        let (total, passed, failed) = parse_test_counts(line);
-        assert_eq!(passed, 5);
-        assert_eq!(failed, 2);
-        assert_eq!(total, 7);
+    fn parses_standard_line() {
+        let (t, p, f) = parse_test_counts("test result: ok. 5 passed; 2 failed; 0 ignored");
+        assert_eq!(p, 5); assert_eq!(f, 2); assert_eq!(t, 7);
     }
 
     #[test]
-    fn parses_zero_counts() {
-        let line = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
-        let (total, passed, failed) = parse_test_counts(line);
-        assert_eq!(passed, 0);
-        assert_eq!(failed, 0);
-        assert_eq!(total, 0);
-    }
-
-    #[test]
-    fn fallback_for_no_summary() {
-        let (total, passed, failed) = parse_test_counts("no summary line here");
-        assert_eq!(total, 1);
-        assert_eq!(passed, 1);
-        assert_eq!(failed, 0);
+    fn fallback_returns_one_passed() {
+        let (t, p, f) = parse_test_counts("no match");
+        assert_eq!(t, 1); assert_eq!(p, 1); assert_eq!(f, 0);
     }
 
     proptest! {
         #[test]
-        fn parse_test_counts_never_panics(s in ".*") {
-            let _ = parse_test_counts(&s);
-        }
+        fn parse_test_counts_never_panics(s in ".*") { let _ = parse_test_counts(&s); }
 
         #[test]
-        fn parse_test_counts_total_is_passed_plus_failed(
-            passed in 0u64..500u64,
-            failed in 0u64..500u64,
-        ) {
-            let line = format!(
-                "test result: ok. {passed} passed; {failed} failed; 0 ignored; 0 measured; 0 filtered out"
-            );
-            let (total, p, f) = parse_test_counts(&line);
-            prop_assert_eq!(p, passed);
-            prop_assert_eq!(f, failed);
-            prop_assert_eq!(total, passed + failed);
+        fn total_is_passed_plus_failed(p in 0u64..500u64, f in 0u64..500u64) {
+            let line = format!("test result: ok. {p} passed; {f} failed; 0 ignored");
+            let (total, passed, failed) = parse_test_counts(&line);
+            prop_assert_eq!(passed, p); prop_assert_eq!(failed, f);
+            prop_assert_eq!(total, p + f);
         }
 
         #[test]

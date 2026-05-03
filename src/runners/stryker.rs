@@ -1,20 +1,28 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use std::path::Path;
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::fastcheck::detect_package_manager;
 
 pub struct StrykerRunner {
     pub mutation_threshold: f64,
+    proc: Arc<dyn SubprocessRunner>,
 }
 
 impl Default for StrykerRunner {
     fn default() -> Self {
-        Self { mutation_threshold: 95.0 }
+        Self { mutation_threshold: 95.0, proc: Arc::new(OsProcessRunner) }
+    }
+}
+
+impl StrykerRunner {
+    pub fn with_threshold(mutation_threshold: f64) -> Self {
+        Self { mutation_threshold, ..Default::default() }
     }
 }
 
@@ -54,30 +62,21 @@ impl TestRunner for StrykerRunner {
         let root = Path::new(&project.root);
         let pm = detect_package_manager(root);
 
-        // Run stryker with JSON reporter
-        let output = Command::new("npx")
-            .args(["stryker", "run", "--reporters", "json,clear-text"])
-            .current_dir(root)
-            .output();
-
-        match output {
-            Ok(result) => {
+        match self.proc.run("npx", &["stryker", "run", "--reporters", "json,clear-text"], root) {
+            Ok(out) => {
                 // Try to parse the JSON mutation report
                 let report_path = root.join("reports").join("mutation").join("mutation.json");
                 let mutation_score = if report_path.exists() {
                     parse_stryker_report(&report_path)
                 } else {
-                    // Fall back to parsing stdout
-                    let stdout = String::from_utf8_lossy(&result.stdout);
-                    let stderr = String::from_utf8_lossy(&result.stderr);
-                    parse_stryker_text_output(&format!("{}\n{}", stdout, stderr))
+                    parse_stryker_text_output(&out.combined())
                 };
 
                 let threshold = self.mutation_threshold;
                 let status = match mutation_score {
                     Some(score) if score >= threshold => LayerStatus::Pass,
                     Some(_) => LayerStatus::Partial,
-                    None if result.status.success() => LayerStatus::Partial,
+                    None if out.success => LayerStatus::Partial,
                     None => LayerStatus::Fail,
                 };
 
@@ -214,6 +213,7 @@ fn build_stryker_findings(mutation_score: Option<f64>, threshold: f64, _pm: &str
 mod tests {
     use super::*;
     use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
     use tempfile::tempdir;
 
@@ -223,7 +223,12 @@ mod tests {
             root: root.to_string(),
             has_tests: true,
             package_name: Some("my-app".to_string()),
+            frameworks: Default::default(),
         }
+    }
+
+    fn runner_with(mock: MockProcessRunner) -> StrykerRunner {
+        StrykerRunner { proc: Arc::new(mock), ..Default::default() }
     }
 
     // ── runner metadata ───────────────────────────────────────────────────────
@@ -251,8 +256,62 @@ mod tests {
             root: dir.path().to_string_lossy().to_string(),
             has_tests: false,
             package_name: None,
+            frameworks: Default::default(),
         };
         assert!(!StrykerRunner::default().is_available(&info));
+    }
+
+    // ── is_available ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn available_when_stryker_dep_present() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"devDependencies":{"@stryker-mutator/core":"7.0"}}"#,
+        ).unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        assert!(StrykerRunner::default().is_available(&info));
+    }
+
+    #[test]
+    fn available_when_stryker_config_present() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("stryker.config.mjs"), b"export default {}").unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        assert!(StrykerRunner::default().is_available(&info));
+    }
+
+    // ── run() with mock ───────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_when_score_meets_threshold() {
+        let stdout = "Mutation score: 97.00%";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_project("/tmp")).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn run_returns_partial_when_score_below_threshold() {
+        let stdout = "Mutation score: 60.00%";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_project("/tmp")).unwrap();
+        assert!(matches!(result.status, LayerStatus::Partial));
+        assert_eq!(result.findings[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "npx not found"))
+            }
+        }
+        let runner = StrykerRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let result = runner.run(&ts_project("/tmp")).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
     }
 
     // ── build_stryker_findings ────────────────────────────────────────────────

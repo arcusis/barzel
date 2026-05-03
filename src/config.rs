@@ -125,6 +125,7 @@ mod tests {
             root: "/tmp".to_string(),
             has_tests: true,
             package_name: Some(name.to_string()),
+            frameworks: Default::default(),
         }
     }
 
@@ -200,6 +201,7 @@ fail_on = "critical"
             root: "/tmp".to_string(),
             has_tests: false,
             package_name: None,
+            frameworks: Default::default(),
         };
         let cfg = BarzelConfig::from_project_info(&info);
         assert_eq!(cfg.project.name, "project");

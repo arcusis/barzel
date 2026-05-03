@@ -1,18 +1,26 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use std::path::Path;
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct GoMutestingRunner {
     pub mutation_threshold: f64,
+    proc: Arc<dyn SubprocessRunner>,
 }
 
 impl Default for GoMutestingRunner {
     fn default() -> Self {
-        Self { mutation_threshold: 95.0 }
+        Self { mutation_threshold: 95.0, proc: Arc::new(OsProcessRunner) }
+    }
+}
+
+impl GoMutestingRunner {
+    pub fn with_threshold(mutation_threshold: f64) -> Self {
+        Self { mutation_threshold, ..Default::default() }
     }
 }
 
@@ -34,35 +42,26 @@ impl TestRunner for GoMutestingRunner {
         if project.language != crate::detect::Language::Go {
             return false;
         }
-        // go-mutesting prints usage and exits non-zero with no args — that's fine, just check it's on PATH
-        Command::new("go-mutesting")
-            .arg("--help")
-            .output()
-            .is_ok()
+        // go-mutesting prints usage and exits non-zero with no args — check it's on PATH
+        // We use is_available which returns true if run() succeeds, but go-mutesting --help
+        // exits non-zero. Instead we just check it doesn't return a NotFound IO error.
+        self.proc.run("go-mutesting", &["--help"], Path::new(".")).is_ok()
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        let output = Command::new("go-mutesting")
-            .args(["./..."])
-            .current_dir(root)
-            .output();
-
-        match output {
-            Ok(result) => {
-                let stdout = String::from_utf8_lossy(&result.stdout);
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                let combined = format!("{}\n{}", stdout, stderr);
-
+        match self.proc.run("go-mutesting", &["./..."], root) {
+            Ok(out) => {
+                let combined = out.combined();
                 let mutation_score = parse_go_mutesting_score(&combined);
                 let threshold = self.mutation_threshold;
 
                 let status = match mutation_score {
                     Some(score) if score >= threshold => LayerStatus::Pass,
                     Some(_) => LayerStatus::Partial,
-                    None if result.status.success() => LayerStatus::Partial,
+                    None if out.success => LayerStatus::Partial,
                     None => LayerStatus::Fail,
                 };
 
@@ -167,11 +166,18 @@ fn build_findings(mutation_score: Option<f64>, threshold: f64) -> Vec<Finding> {
 mod tests {
     use super::*;
     use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
 
     fn info(lang: Language) -> ProjectInfo {
-        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None }
+        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
     }
+
+    fn runner_with(mock: MockProcessRunner) -> GoMutestingRunner {
+        GoMutestingRunner { proc: Arc::new(mock), ..Default::default() }
+    }
+
+    // ── metadata ──────────────────────────────────────────────────────────────
 
     #[test]
     fn name_is_go_mutesting() {
@@ -188,6 +194,8 @@ mod tests {
         assert!(!GoMutestingRunner::default().skip_message().is_empty());
     }
 
+    // ── is_available ──────────────────────────────────────────────────────────
+
     #[test]
     fn not_available_for_rust() {
         assert!(!GoMutestingRunner::default().is_available(&info(Language::Rust)));
@@ -197,6 +205,59 @@ mod tests {
     fn not_available_for_typescript() {
         assert!(!GoMutestingRunner::default().is_available(&info(Language::TypeScript)));
     }
+
+    #[test]
+    fn available_when_command_runs() {
+        let r = GoMutestingRunner { proc: Arc::new(MockProcessRunner::passing("")), ..Default::default() };
+        assert!(r.is_available(&info(Language::Go)));
+    }
+
+    #[test]
+    fn not_available_when_command_errors() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            }
+        }
+        let r = GoMutestingRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        assert!(!r.is_available(&info(Language::Go)));
+    }
+
+    // ── run() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_when_score_meets_threshold() {
+        let stdout = "The mutation score is 1.0000 (19 of 19 mutants killed)";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Go)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn run_returns_partial_when_score_below_threshold() {
+        let stdout = "The mutation score is 0.6000 (12 of 20 mutants killed)";
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Go)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Partial));
+        assert_eq!(result.findings[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            }
+        }
+        let r = GoMutestingRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let result = r.run(&info(Language::Go)).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+        assert_eq!(result.metrics.failed, 1);
+    }
+
+    // ── parse_go_mutesting_score ──────────────────────────────────────────────
 
     #[test]
     fn parses_standard_score_line() {
@@ -218,6 +279,8 @@ mod tests {
         assert!(parse_go_mutesting_score("").is_none());
         assert!(parse_go_mutesting_score("no relevant output").is_none());
     }
+
+    // ── build_findings ────────────────────────────────────────────────────────
 
     #[test]
     fn build_findings_empty_when_above_threshold() {

@@ -1,12 +1,21 @@
 use crate::detect::ProjectInfo;
 use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
+use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
 use std::path::Path;
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
-pub struct GoTestRunner;
+pub struct GoTestRunner {
+    proc: Arc<dyn SubprocessRunner>,
+}
+
+impl Default for GoTestRunner {
+    fn default() -> Self {
+        Self { proc: Arc::new(OsProcessRunner) }
+    }
+}
 
 impl TestRunner for GoTestRunner {
     fn name(&self) -> &'static str {
@@ -25,27 +34,16 @@ impl TestRunner for GoTestRunner {
         if project.language != crate::detect::Language::Go {
             return false;
         }
-        Command::new("go")
-            .args(["version"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.proc.is_available("go", &["version"])
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        let output = Command::new("go")
-            .args(["test", "./...", "-json", "-count=1"])
-            .current_dir(root)
-            .output();
-
-        match output {
-            Ok(result) => {
-                let stdout = String::from_utf8_lossy(&result.stdout);
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                let (passed, failed, panics) = parse_go_json_output(&stdout);
+        match self.proc.run("go", &["test", "./...", "-json", "-count=1"], root) {
+            Ok(out) => {
+                let (passed, failed, panics) = parse_go_json_output(&out.stdout);
                 let total = passed + failed;
 
                 let status = if failed > 0 || !panics.is_empty() {
@@ -88,7 +86,7 @@ impl TestRunner for GoTestRunner {
                     });
                 }
 
-                if total == 0 && stderr.contains("no test files") {
+                if total == 0 && out.stderr.contains("no test files") {
                     findings.push(Finding {
                         severity: Severity::Info,
                         code: "NO_GO_TESTS".to_string(),
@@ -188,38 +186,96 @@ fn parse_go_json_output(output: &str) -> (u64, u64, Vec<String>) {
 mod tests {
     use super::*;
     use crate::detect::{Language, ProjectInfo};
+    use crate::process::MockProcessRunner;
     use proptest::prelude::*;
 
     fn go_info() -> ProjectInfo {
-        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None }
+        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
     }
+
+    fn runner_with(mock: MockProcessRunner) -> GoTestRunner {
+        GoTestRunner { proc: Arc::new(mock) }
+    }
+
+    // ── metadata ──────────────────────────────────────────────────────────────
 
     #[test]
     fn name_is_go_test() {
-        assert_eq!(GoTestRunner.name(), "go-test");
+        assert_eq!(GoTestRunner::default().name(), "go-test");
     }
 
     #[test]
     fn layer_is_logic() {
-        assert!(matches!(GoTestRunner.layer(), crate::plugin::Layer::Logic));
+        assert!(matches!(GoTestRunner::default().layer(), crate::plugin::Layer::Logic));
     }
 
     #[test]
     fn skip_message_nonempty() {
-        assert!(!GoTestRunner.skip_message().is_empty());
+        assert!(!GoTestRunner::default().skip_message().is_empty());
     }
+
+    // ── is_available ──────────────────────────────────────────────────────────
 
     #[test]
     fn not_available_for_rust() {
-        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None };
-        assert!(!GoTestRunner.is_available(&info));
+        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(!GoTestRunner::default().is_available(&info));
     }
 
     #[test]
     fn not_available_for_typescript() {
-        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None };
-        assert!(!GoTestRunner.is_available(&info));
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        assert!(!GoTestRunner::default().is_available(&info));
     }
+
+    #[test]
+    fn available_when_go_present() {
+        let r = GoTestRunner { proc: Arc::new(MockProcessRunner::passing("go version go1.22")) };
+        assert!(r.is_available(&go_info()));
+    }
+
+    #[test]
+    fn not_available_when_go_missing() {
+        let r = GoTestRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
+        assert!(!r.is_available(&go_info()));
+    }
+
+    // ── run() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_returns_pass_on_all_passing() {
+        let stdout = r#"{"Action":"pass","Test":"TestFoo","Package":"pkg"}
+{"Action":"pass","Test":"TestBar","Package":"pkg"}"#;
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&go_info()).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
+        assert_eq!(result.metrics.passed, 2);
+        assert_eq!(result.metrics.failed, 0);
+    }
+
+    #[test]
+    fn run_returns_fail_on_test_failure() {
+        let stdout = r#"{"Action":"pass","Test":"TestFoo","Package":"pkg"}
+{"Action":"fail","Test":"TestBar","Package":"pkg"}"#;
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&go_info()).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn run_returns_fail_on_subprocess_error() {
+        struct BrokenProc;
+        impl SubprocessRunner for BrokenProc {
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "go not found"))
+            }
+        }
+        let runner = GoTestRunner { proc: Arc::new(BrokenProc) };
+        let result = runner.run(&go_info()).unwrap();
+        assert!(matches!(result.status, LayerStatus::Fail));
+        assert_eq!(result.findings[0].severity, Severity::Critical);
+    }
+
+    // ── parse_go_json_output ──────────────────────────────────────────────────
 
     fn make_event(action: &str, test: Option<&str>) -> String {
         if let Some(t) = test {
