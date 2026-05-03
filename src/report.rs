@@ -162,6 +162,41 @@ impl BarzelReport {
         self.layers.push(layer);
     }
 
+    /// Recompute summary counts and overall status from the current layers.
+    /// Call after injecting findings post-run (e.g. coverage threshold enforcement).
+    pub fn recompute_summary(&mut self) {
+        let mut s = Summary {
+            total_findings: 0,
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            overall_status: ReportStatus::Pass,
+        };
+        for layer in &self.layers {
+            for finding in &layer.findings {
+                s.total_findings += 1;
+                match finding.severity {
+                    Severity::Critical => s.critical += 1,
+                    Severity::High => s.high += 1,
+                    Severity::Medium => s.medium += 1,
+                    Severity::Low => s.low += 1,
+                    Severity::Info => {}
+                }
+            }
+        }
+        let status = if s.critical > 0 {
+            ReportStatus::Fail
+        } else if s.high > 0 || s.medium > 0 {
+            ReportStatus::Partial
+        } else {
+            ReportStatus::Pass
+        };
+        s.overall_status = status;
+        self.summary = s;
+        self.status = status;
+    }
+
     pub fn save(&self, base_dir: &Path) -> crate::error::Result<std::path::PathBuf> {
         let reports_dir = base_dir.join(".barzel").join("reports");
         std::fs::create_dir_all(&reports_dir)?;
