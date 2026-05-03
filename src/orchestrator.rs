@@ -118,7 +118,7 @@ impl<'a> VerificationOrchestrator<'a> {
 
         if !self.no_cache
             && is_cacheable(runner.layer())
-            && cache::is_cached(project_root, runner.name())
+            && cache::is_cached(project_root, project.language, runner.name())
         {
             return LayerResult {
                 name: runner.layer().as_str().to_string(),
@@ -140,7 +140,7 @@ impl<'a> VerificationOrchestrator<'a> {
         match runner.run(project) {
             Ok(result) => {
                 if is_cacheable(runner.layer()) && !matches!(result.status, LayerStatus::Fail) {
-                    cache::save_current_hash(project_root, runner.name());
+                    cache::save_current_hash(project_root, project.language, runner.name());
                 }
                 result
             }
@@ -326,7 +326,7 @@ mod tests {
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(crate::cache::is_cached(dir.path(), "mock-mutants"));
+        assert!(crate::cache::is_cached(dir.path(), Language::Rust, "mock-mutants"));
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let runner = PassRunner { layer: Layer::Logic, name: "mock-proptest" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), "mock-proptest"));
+        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "mock-proptest"));
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
         let runner = PassRunner { layer: Layer::Hostile, name: "mock-semgrep" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), "mock-semgrep"));
+        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "mock-semgrep"));
     }
 
     #[test]
@@ -356,14 +356,14 @@ mod tests {
         let runner = FailRunner { layer: Layer::Structural };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), "fail-runner"));
+        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "fail-runner"));
     }
 
     #[test]
     fn cached_structural_layer_is_skipped() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        crate::cache::save_current_hash(dir.path(), "mock-mutants");
+        crate::cache::save_current_hash(dir.path(), Language::Rust, "mock-mutants");
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         let report = orch.run(&project).unwrap();
@@ -375,7 +375,7 @@ mod tests {
     fn no_cache_flag_bypasses_cached_layer() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        crate::cache::save_current_hash(dir.path(), "mock-mutants");
+        crate::cache::save_current_hash(dir.path(), Language::Rust, "mock-mutants");
         let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]).with_no_cache();
         let report = orch.run(&project).unwrap();

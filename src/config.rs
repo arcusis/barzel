@@ -89,8 +89,9 @@ impl BarzelConfig {
         let config_path = root.join(".barzel.toml");
         if config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(cfg) = toml::from_str::<Self>(&content) {
-                    return cfg;
+                match toml::from_str::<Self>(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => eprintln!("barzel: warning: .barzel.toml is invalid — using defaults ({})", e),
                 }
             }
         }
@@ -181,9 +182,10 @@ fail_on = "critical"
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".barzel.toml"), b"not: valid: toml: {{").unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        // Should silently fall back to default
+        // Returns defaults even when TOML is invalid (warning emitted to stderr — not tested here)
         let def = BarzelConfig::default();
         assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
+        assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
     }
 
     // ── from_project_info ─────────────────────────────────────────────────────
