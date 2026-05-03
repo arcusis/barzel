@@ -60,6 +60,7 @@ impl Default for BarzelConfig {
                     "logic".to_string(),
                     "structural".to_string(),
                     "hostile".to_string(),
+                    "operational".to_string(),
                 ],
                 logic: LogicConfig {
                     property_based: true,

@@ -231,10 +231,20 @@ fn severity_priority(s: &Severity) -> u8 {
 }
 
 fn report_exit_code(report: &BarzelReport) -> ExitCode {
-    match report.status {
-        ReportStatus::Pass => ExitCode::SUCCESS,
-        ReportStatus::Partial => ExitCode::from(2),
-        ReportStatus::Fail => ExitCode::from(1),
+    // Check if any finding meets or exceeds the fail_on threshold
+    let fail = match report.fail_on.as_str() {
+        "critical" => report.summary.critical > 0,
+        "medium"   => report.summary.critical > 0 || report.summary.high > 0 || report.summary.medium > 0,
+        "any" | "low" => report.summary.total_findings > 0,
+        _ => report.summary.critical > 0 || report.summary.high > 0, // "high" (default)
+    };
+
+    if fail {
+        ExitCode::from(1)
+    } else if !matches!(report.status, ReportStatus::Pass) {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -330,6 +340,89 @@ fn cmd_report(id: Option<String>) -> error::Result<()> {
     Ok(())
 }
 
+// ── Check command ─────────────────────────────────────────────────────────────
+
+fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
+    use crate::detect::detect_project;
+    use crate::process::{OsProcessRunner, SubprocessRunner};
+
+    let target = path.unwrap_or_else(|| std::path::Path::new("."));
+    let project = detect_project(target)?;
+    let proc = OsProcessRunner;
+
+    println!(
+        "{} Barzel tool check — {} project",
+        "→".bright_blue(),
+        project.language.to_string().bright_green()
+    );
+    println!();
+
+    struct Tool {
+        name: &'static str,
+        check_args: &'static [&'static str],
+        layer: &'static str,
+        install: &'static str,
+    }
+
+    let tools: &[Tool] = &[
+        Tool { name: "cargo", check_args: &["--version"], layer: "core", install: "https://rustup.rs" },
+        Tool { name: "cargo kani", check_args: &["kani", "--version"], layer: "logic", install: "cargo install --locked kani-verifier" },
+        Tool { name: "cargo mutants", check_args: &["mutants", "--version"], layer: "structural", install: "cargo install cargo-mutants" },
+        Tool { name: "cargo fuzz", check_args: &["fuzz", "--version"], layer: "hostile", install: "cargo install cargo-fuzz" },
+        Tool { name: "semgrep", check_args: &["--version"], layer: "hostile", install: "pip install semgrep" },
+        Tool { name: "pytest", check_args: &["--version"], layer: "logic", install: "pip install pytest" },
+        Tool { name: "mutmut", check_args: &["--version"], layer: "structural", install: "pip install mutmut" },
+        Tool { name: "bandit", check_args: &["--version"], layer: "hostile", install: "pip install bandit" },
+        Tool { name: "npx", check_args: &["--version"], layer: "core", install: "Install Node.js from https://nodejs.org" },
+        Tool { name: "node", check_args: &["--version"], layer: "core", install: "Install Node.js from https://nodejs.org" },
+    ];
+
+    let mut missing = Vec::new();
+    for tool in tools {
+        let first_word = tool.name.split_whitespace().next().unwrap_or(tool.name);
+        let available = proc.is_available(first_word, tool.check_args);
+        let icon = if available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
+        println!(
+            "  {} {:<20} [{:<12}]{}",
+            icon,
+            tool.name,
+            tool.layer,
+            if available { String::new() } else { format!("  install: {}", tool.install.dimmed()) }
+        );
+        if !available {
+            missing.push(tool);
+        }
+    }
+
+    println!();
+    if missing.is_empty() {
+        println!("{} All tools available — run `barzel run` to start verification.", "✓".bright_green());
+    } else {
+        println!(
+            "{} {} tool(s) missing. Install them to enable the corresponding layers.",
+            "!".yellow(),
+            missing.len()
+        );
+    }
+
+    // Show detected frameworks
+    if project.frameworks.has_ai_deps {
+        println!();
+        println!(
+            "  {} AI frameworks detected: {}",
+            "→".bright_blue(),
+            project.frameworks.ai_frameworks.join(", ").bright_yellow()
+        );
+        println!("    aisec runner will activate automatically.");
+    }
+    if project.frameworks.is_nextjs {
+        println!();
+        println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
+    }
+
+    Ok(())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() -> ExitCode {
@@ -371,6 +464,14 @@ fn main() -> ExitCode {
         }
 
         Commands::Report { id } => match cmd_report(id) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{} {}", "Error:".bright_red(), e);
+                ExitCode::from(1)
+            }
+        },
+
+        Commands::Check { path } => match cmd_check(path.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{} {}", "Error:".bright_red(), e);

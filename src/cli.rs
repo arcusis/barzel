@@ -46,4 +46,11 @@ pub enum Commands {
         /// Report ID prefix or "latest" (default: latest)
         id: Option<String>,
     },
+
+    /// Check which tools are installed and what runners are available
+    Check {
+        /// Target directory (defaults to current directory)
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
 }
