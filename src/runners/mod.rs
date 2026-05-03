@@ -1,4 +1,5 @@
 pub mod aisec;
+pub mod health_check;
 pub mod bandit;
 pub mod cargo_audit;
 pub mod cargo_fuzz;

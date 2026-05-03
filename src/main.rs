@@ -5,6 +5,7 @@ mod config;
 mod detect;
 mod diff;
 mod error;
+mod http;
 mod init;
 mod orchestrator;
 mod plugin;

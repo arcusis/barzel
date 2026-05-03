@@ -23,6 +23,7 @@ use crate::runners::playwright::PlaywrightRunner;
 use crate::runners::proptest::ProptestRunner;
 use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
+use crate::runners::health_check::HealthCheckRunner;
 use crate::runners::stryker::StrykerRunner;
 use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -305,6 +306,7 @@ fn run_project_report(
     let bandit = BanditRunner::default();
     let aisec = AiSecRunner::default();
     let playwright = PlaywrightRunner::default();
+    let health_check = HealthCheckRunner::new(cfg.layers.operational.health_checks.clone());
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &cargo_audit, &semgrep],
@@ -316,6 +318,9 @@ fn run_project_report(
 
     if project.frameworks.has_ai_deps {
         language_runners.push(&aisec);
+    }
+    if !cfg.layers.operational.health_checks.is_empty() {
+        language_runners.push(&health_check);
     }
 
     let enabled = &cfg.layers.enabled;
@@ -722,5 +727,36 @@ mod tests {
             "summary.total_findings must match actual finding count in layers"
         );
         assert_eq!(report.summary.total_findings, 1, "skip report has exactly one Info finding");
+    }
+
+    // ── health check runner registration ─────────────────────────────────────
+
+    #[test]
+    fn no_health_checks_means_no_health_check_runner_in_report() {
+        use crate::config::{BarzelConfig, OperationalConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        // Minimal project — no Cargo.toml, no .barzel.toml → defaults
+        let project = crate::detect::ProjectInfo {
+            language: Language::Unknown,
+            root: dir.path().to_string_lossy().into_owned(),
+            has_tests: false,
+            package_name: None,
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.operational = OperationalConfig { health_checks: vec![] };
+
+        // Filter to Operational layer only so no language runners (Semgrep etc.) are
+        // invoked — the test must not depend on external tool availability.
+        let layers = Some(vec!["operational".to_string()]);
+        let report = run_project_report(&project, &cfg, &layers, false, false, true).unwrap();
+
+        let has_health_check_layer = report.layers.iter().any(|l| l.runner == "health-check");
+        assert!(!has_health_check_layer,
+            "with no health_checks configured, no health-check runner result must appear in the report");
     }
 }
