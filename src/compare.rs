@@ -22,9 +22,10 @@ fn status_rank(s: LayerStatus) -> u8 {
 }
 
 fn status_worsened(from: LayerStatus, to: LayerStatus) -> bool {
-    // Skipped replacing a Fail layer is NOT a regression — it might mean the runner
-    // was not applicable (e.g., no AI deps). Only flag genuine status degradation.
-    if to == LayerStatus::Skipped { return false; }
+    // Skipped is neutral in both directions. If a runner transitions from Skipped
+    // to Fail, NewFinding regressions will surface any Critical/High issues found —
+    // a StatusWorsened on top would be contradictory and redundant.
+    if from == LayerStatus::Skipped || to == LayerStatus::Skipped { return false; }
     status_rank(to) > status_rank(from)
 }
 
@@ -529,6 +530,17 @@ mod tests {
         let cmp = compare_reports(&baseline, &head);
         assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
             "Skipped must never be considered worse than Fail");
+    }
+
+    #[test]
+    fn skipped_to_fail_is_not_status_regression() {
+        // A runner transitioning from Skipped to Fail should not produce StatusWorsened —
+        // NewFinding regressions will surface any Critical/High issues instead.
+        let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
+        let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![])]);
+        let cmp = compare_reports(&baseline, &head);
+        assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
+            "Skipped → Fail must not produce StatusWorsened");
     }
 
     #[test]
