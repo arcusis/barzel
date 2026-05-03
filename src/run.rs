@@ -180,8 +180,8 @@ fn run_project_report(
     if no_cache { orchestrator = orchestrator.with_no_cache(); }
     if fail_fast { orchestrator = orchestrator.with_fail_fast(); }
 
-    if stdio {
-        orchestrator.run(project)
+    let mut report = if stdio {
+        orchestrator.run(project)?
     } else {
         let pb = make_spinner();
         let pb_cb = pb.clone();
@@ -190,7 +190,67 @@ fn run_project_report(
             pb_cb.enable_steady_tick(Duration::from_millis(80));
         })?;
         pb.finish_and_clear();
-        Ok(r)
+        r
+    };
+
+    apply_coverage_threshold(&mut report, cfg.layers.logic.min_coverage);
+    Ok(report)
+}
+
+/// Enforce `min_coverage` threshold against all Logic layers that reported coverage metrics.
+/// Injects a High finding and marks the layer Partial if it was previously Pass.
+/// Idempotent: skips layers that already have a COVERAGE_BELOW_THRESHOLD finding.
+fn apply_coverage_threshold(report: &mut BarzelReport, min_coverage: Option<f64>) {
+    let threshold = match min_coverage {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut any_injected = false;
+
+    for layer in &mut report.layers {
+        if layer.name != "logic" { continue; }
+        let coverage = match layer.metrics.coverage {
+            Some(c) => c,
+            None => continue,
+        };
+        if coverage >= threshold { continue; }
+        if layer.findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD") { continue; }
+
+        let reproduce_cmd = reproduce_cmd_for_runner(&layer.runner);
+        layer.findings.push(crate::report::Finding {
+            severity: crate::report::Severity::High,
+            code: "COVERAGE_BELOW_THRESHOLD".to_string(),
+            message: format!(
+                "Coverage {:.1}% is below the configured minimum of {:.1}% (runner: {})",
+                coverage, threshold, layer.runner
+            ),
+            location: None,
+            reproduce_cmd: Some(reproduce_cmd),
+            suggestion: Some(format!(
+                "Increase test coverage to at least {:.0}%. \
+                 Add tests for uncovered branches and run with coverage reporting enabled.",
+                threshold
+            )),
+        });
+
+        if matches!(layer.status, crate::report::LayerStatus::Pass) {
+            layer.status = crate::report::LayerStatus::Partial;
+        }
+        any_injected = true;
+    }
+
+    if any_injected {
+        report.recompute_summary();
+    }
+}
+
+fn reproduce_cmd_for_runner(runner: &str) -> String {
+    match runner {
+        "pytest"  => "pytest --cov --cov-report=term-missing 2>&1 | tail -20".to_string(),
+        "jest"    => "npx jest --coverage 2>&1 | tail -20".to_string(),
+        "go-test" => "go test ./... -cover 2>&1 | tail -20".to_string(),
+        _         => format!("{} (with coverage enabled) 2>&1 | tail -20", runner),
     }
 }
 
@@ -289,4 +349,152 @@ fn make_spinner() -> ProgressBar {
             .unwrap_or_else(|_| ProgressStyle::default_spinner()),
     );
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::{Language, ProjectFrameworks};
+    use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, ReportStatus, Severity};
+
+    fn logic_layer_with_coverage(runner: &str, coverage: f64, status: LayerStatus) -> LayerResult {
+        LayerResult {
+            name: "logic".to_string(),
+            runner: runner.to_string(),
+            status,
+            findings: vec![],
+            metrics: LayerMetrics { coverage: Some(coverage), ..Default::default() },
+            duration_ms: 0,
+        }
+    }
+
+    fn make_report_with_layer(layer: LayerResult) -> BarzelReport {
+        let project = crate::detect::ProjectInfo {
+            language: Language::Python,
+            root: "/tmp".to_string(),
+            has_tests: true,
+            package_name: Some("testpkg".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        let mut report = BarzelReport::new(project);
+        report.add_layer(layer);
+        report
+    }
+
+    #[test]
+    fn no_threshold_leaves_report_unchanged() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 40.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, None);
+        assert!(report.layers[0].findings.is_empty());
+        assert!(matches!(report.layers[0].status, LayerStatus::Pass));
+    }
+
+    #[test]
+    fn coverage_above_threshold_no_finding() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 90.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(85.0));
+        assert!(!report.layers[0].findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
+        assert!(matches!(report.layers[0].status, LayerStatus::Pass));
+    }
+
+    #[test]
+    fn coverage_equal_to_threshold_no_finding() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 85.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(85.0));
+        assert!(!report.layers[0].findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
+    }
+
+    #[test]
+    fn coverage_below_threshold_injects_high_finding() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 72.5, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(85.0));
+
+        let finding = report.layers[0].findings.iter().find(|f| f.code == "COVERAGE_BELOW_THRESHOLD");
+        assert!(finding.is_some(), "expected COVERAGE_BELOW_THRESHOLD finding");
+        let f = finding.unwrap();
+        assert_eq!(f.severity, Severity::High);
+        assert!(f.reproduce_cmd.is_some(), "finding must include reproduce_cmd");
+        assert!(f.reproduce_cmd.as_ref().unwrap().contains("pytest"));
+        assert!(f.message.contains("72.5"));
+        assert!(f.message.contains("85.0"));
+    }
+
+    #[test]
+    fn coverage_below_threshold_marks_layer_partial() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(80.0));
+        assert!(matches!(report.layers[0].status, LayerStatus::Partial));
+    }
+
+    #[test]
+    fn coverage_below_threshold_updates_report_summary() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(80.0));
+        assert_eq!(report.summary.high, 1);
+        assert_eq!(report.summary.total_findings, 1);
+        assert!(matches!(report.status, ReportStatus::Partial));
+    }
+
+    #[test]
+    fn enforcement_is_idempotent() {
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        apply_coverage_threshold(&mut report, Some(80.0));
+        apply_coverage_threshold(&mut report, Some(80.0));
+        let count = report.layers[0].findings.iter()
+            .filter(|f| f.code == "COVERAGE_BELOW_THRESHOLD")
+            .count();
+        assert_eq!(count, 1, "duplicate findings must not be injected");
+    }
+
+    #[test]
+    fn non_logic_layer_not_affected() {
+        let project = crate::detect::ProjectInfo {
+            language: Language::Python,
+            root: "/tmp".to_string(),
+            has_tests: true,
+            package_name: Some("testpkg".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        let mut report = BarzelReport::new(project);
+        report.add_layer(LayerResult {
+            name: "structural".to_string(),
+            runner: "mutmut".to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![],
+            metrics: LayerMetrics { coverage: Some(40.0), ..Default::default() },
+            duration_ms: 0,
+        });
+        apply_coverage_threshold(&mut report, Some(80.0));
+        assert!(report.layers[0].findings.is_empty());
+    }
+
+    #[test]
+    fn layer_without_coverage_metric_not_affected() {
+        let project = crate::detect::ProjectInfo {
+            language: Language::Python,
+            root: "/tmp".to_string(),
+            has_tests: true,
+            package_name: Some("testpkg".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        let mut report = BarzelReport::new(project);
+        report.add_layer(LayerResult {
+            name: "logic".to_string(),
+            runner: "pytest".to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![],
+            metrics: LayerMetrics { coverage: None, ..Default::default() },
+            duration_ms: 0,
+        });
+        apply_coverage_threshold(&mut report, Some(80.0));
+        assert!(report.layers[0].findings.is_empty());
+    }
+
+    #[test]
+    fn failing_layer_status_unchanged_when_below_threshold() {
+        // If a layer already Fails (e.g. test failures), stay Fail — don't downgrade to Partial
+        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 30.0, LayerStatus::Fail));
+        apply_coverage_threshold(&mut report, Some(80.0));
+        assert!(matches!(report.layers[0].status, LayerStatus::Fail));
+    }
 }

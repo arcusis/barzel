@@ -26,6 +26,10 @@ pub struct LayersConfig {
 pub struct LogicConfig {
     pub property_based: bool,
     pub formal_verification: bool,
+    /// Minimum coverage percentage (0–100) to pass the Logic layer.
+    /// Omit or set to null to disable the check.
+    #[serde(default)]
+    pub min_coverage: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,7 @@ impl Default for BarzelConfig {
                 logic: LogicConfig {
                     property_based: true,
                     formal_verification: true,
+                    min_coverage: None,
                 },
                 structural: StructuralConfig {
                     mutation_testing: true,
@@ -233,5 +238,55 @@ fail_on = "critical"
         cfg.save(&path).unwrap();
         let loaded = BarzelConfig::load_for_project(dir.path());
         assert!((loaded.layers.structural.mutation_threshold - 80.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn min_coverage_defaults_to_none() {
+        let cfg = BarzelConfig::default();
+        assert!(cfg.layers.logic.min_coverage.is_none());
+    }
+
+    #[test]
+    fn min_coverage_parses_from_toml() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "cov-test"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+min_coverage = 85.0
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(cfg.layers.logic.min_coverage, Some(85.0));
+    }
+
+    #[test]
+    fn min_coverage_round_trips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".barzel.toml");
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(75.0);
+        cfg.save(&path).unwrap();
+        let loaded = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(loaded.layers.logic.min_coverage, Some(75.0));
     }
 }
