@@ -20,7 +20,33 @@ pub struct LayersConfig {
     pub logic: LogicConfig,
     pub structural: StructuralConfig,
     pub hostile: HostileConfig,
+    #[serde(default)]
+    pub operational: OperationalConfig,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OperationalConfig {
+    #[serde(default)]
+    pub health_checks: Vec<HealthCheckConfig>,
+}
+
+/// A single HTTP health-check endpoint to verify during the Operational layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckConfig {
+    /// Human-readable name shown in findings and report output.
+    pub name: String,
+    /// Full URL to GET, e.g. `http://localhost:3000/health`.
+    pub url: String,
+    /// HTTP status code considered healthy. Default: 200.
+    #[serde(default = "default_expected_status")]
+    pub expected_status: u16,
+    /// Request timeout in milliseconds. Default: 5000.
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_expected_status() -> u16 { 200 }
+fn default_timeout_ms() -> u64 { 5000 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicConfig {
@@ -79,6 +105,7 @@ impl Default for BarzelConfig {
                     fuzzing: true,
                     sast: true,
                 },
+                operational: OperationalConfig::default(),
             },
             reporting: ReportingConfig {
                 format: "json".to_string(),
@@ -290,5 +317,135 @@ fail_on = "high"
         cfg.save(&path).unwrap();
         let loaded = BarzelConfig::load_for_project(dir.path());
         assert_eq!(loaded.layers.logic.min_coverage, Some(75.0));
+    }
+
+    #[test]
+    fn no_operational_section_defaults_to_empty_health_checks() {
+        let cfg = BarzelConfig::default();
+        assert!(cfg.layers.operational.health_checks.is_empty(),
+            "no configured health_checks must produce an empty vec by default");
+    }
+
+    #[test]
+    fn missing_operational_section_in_toml_loads_with_empty_checks() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "rust"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert!(cfg.layers.operational.health_checks.is_empty(),
+            "existing .barzel.toml without [layers.operational] must load cleanly");
+    }
+
+    #[test]
+    fn health_checks_parse_from_toml() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[[layers.operational.health_checks]]
+name = "api"
+url = "http://localhost:3000/health"
+expected_status = 200
+timeout_ms = 5000
+
+[[layers.operational.health_checks]]
+name = "worker"
+url = "http://localhost:4000/ready"
+expected_status = 204
+timeout_ms = 3000
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        let checks = &cfg.layers.operational.health_checks;
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].name, "api");
+        assert_eq!(checks[0].url, "http://localhost:3000/health");
+        assert_eq!(checks[0].expected_status, 200);
+        assert_eq!(checks[0].timeout_ms, 5000);
+        assert_eq!(checks[1].name, "worker");
+        assert_eq!(checks[1].expected_status, 204);
+    }
+
+    #[test]
+    fn health_check_defaults_applied() {
+        let dir = tempdir().unwrap();
+        // Omit expected_status and timeout_ms — defaults should apply
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[[layers.operational.health_checks]]
+name = "api"
+url = "http://localhost:3000/health"
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        let check = &cfg.layers.operational.health_checks[0];
+        assert_eq!(check.expected_status, 200, "default expected_status is 200");
+        assert_eq!(check.timeout_ms, 5000, "default timeout_ms is 5000");
     }
 }

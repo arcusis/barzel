@@ -23,6 +23,7 @@ use crate::runners::playwright::PlaywrightRunner;
 use crate::runners::proptest::ProptestRunner;
 use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
+use crate::runners::health_check::HealthCheckRunner;
 use crate::runners::stryker::StrykerRunner;
 use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -305,6 +306,7 @@ fn run_project_report(
     let bandit = BanditRunner::default();
     let aisec = AiSecRunner::default();
     let playwright = PlaywrightRunner::default();
+    let health_check = HealthCheckRunner::new(cfg.layers.operational.health_checks.clone());
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &cargo_audit, &semgrep],
@@ -316,6 +318,9 @@ fn run_project_report(
 
     if project.frameworks.has_ai_deps {
         language_runners.push(&aisec);
+    }
+    if !cfg.layers.operational.health_checks.is_empty() {
+        language_runners.push(&health_check);
     }
 
     let enabled = &cfg.layers.enabled;
