@@ -168,6 +168,121 @@ mod tests {
         assert_eq!(extract_package_name_from_content(""), None);
     }
 
+    // ── Language Display ──────────────────────────────────────────────────────
+
+    #[test]
+    fn language_display_values() {
+        assert_eq!(Language::Rust.to_string(), "rust");
+        assert_eq!(Language::TypeScript.to_string(), "typescript");
+        assert_eq!(Language::Go.to_string(), "go");
+        assert_eq!(Language::Unknown.to_string(), "unknown");
+    }
+
+    // ── TypeScript detection ──────────────────────────────────────────────────
+
+    #[test]
+    fn detects_typescript_with_package_json() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), r#"{"name":"my-app"}"#).unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert_eq!(info.language, Language::TypeScript);
+        assert_eq!(info.package_name, Some("my-app".to_string()));
+    }
+
+    #[test]
+    fn typescript_has_tests_with_tests_dir() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), b"{}").unwrap();
+        fs::create_dir(dir.path().join("tests")).unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert!(info.has_tests);
+    }
+
+    #[test]
+    fn typescript_has_tests_with_dunder_tests_dir() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), b"{}").unwrap();
+        fs::create_dir(dir.path().join("__tests__")).unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert!(info.has_tests);
+    }
+
+    #[test]
+    fn typescript_no_tests_without_test_dirs() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"), b"{}").unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert!(!info.has_tests);
+    }
+
+    #[test]
+    fn rust_has_tests_with_lib_rs_only() {
+        // tests/ does NOT exist, src/lib.rs DOES — catches || → && mutation
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("lib.rs"), b"pub fn x() {}").unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert!(info.has_tests);
+    }
+
+    // ── Go detection ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn detects_go_project_with_module_name() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), b"module github.com/user/myproject\ngo 1.21\n").unwrap();
+        let info = detect_project(dir.path()).unwrap();
+        assert_eq!(info.language, Language::Go);
+        assert_eq!(info.package_name, Some("myproject".to_string()));
+    }
+
+    #[test]
+    fn go_module_name_extracts_last_segment() {
+        assert_eq!(
+            extract_go_module_name("module github.com/user/my-app\n"),
+            Some("my-app".to_string())
+        );
+    }
+
+    #[test]
+    fn go_module_name_returns_none_for_empty() {
+        assert_eq!(extract_go_module_name(""), None);
+        assert_eq!(extract_go_module_name("no module line"), None);
+    }
+
+    // ── extract_json_string_field ─────────────────────────────────────────────
+
+    #[test]
+    fn extracts_name_from_package_json() {
+        let json = r#"{"name": "my-package", "version": "1.0.0"}"#;
+        assert_eq!(
+            extract_json_string_field(json, "name"),
+            Some("my-package".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_field_missing() {
+        assert_eq!(extract_json_string_field(r#"{"version":"1.0"}"#, "name"), None);
+    }
+
+    #[test]
+    fn extracts_field_when_not_first_in_object() {
+        // pos is large here — catches the pos + len vs pos * len mutation
+        let json = r#"{"version":"1.0","description":"a lib","name":"real-name"}"#;
+        assert_eq!(
+            extract_json_string_field(json, "name"),
+            Some("real-name".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_empty_string_value() {
+        assert_eq!(extract_json_string_field(r#"{"name":""}"#, "name"), None);
+    }
+
     proptest! {
         #[test]
         fn extract_never_panics(content in ".*") {
@@ -178,7 +293,6 @@ mod tests {
         fn detect_always_returns_result(path_suffix in "[a-z]{1,8}") {
             let dir = tempdir().unwrap();
             let sub = dir.path().join(path_suffix);
-            // detect on a non-existent path falls back gracefully
             let result = detect_project(&sub);
             prop_assert!(result.is_ok());
         }
@@ -188,6 +302,16 @@ mod tests {
             let content = format!("[package]\nname = \"{name}\"");
             let extracted = extract_package_name_from_content(&content);
             prop_assert_eq!(extracted, Some(name));
+        }
+
+        #[test]
+        fn extract_json_field_never_panics(json in ".*", field in "[a-z]+") {
+            let _ = extract_json_string_field(&json, &field);
+        }
+
+        #[test]
+        fn go_module_name_never_panics(content in ".*") {
+            let _ = extract_go_module_name(&content);
         }
     }
 }

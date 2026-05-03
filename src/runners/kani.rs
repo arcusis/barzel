@@ -198,3 +198,127 @@ fn extract_kani_failures(output: &str) -> Vec<Finding> {
 
     findings
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    // ── runner metadata ───────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_kani() {
+        assert_eq!(KaniRunner.name(), "kani");
+    }
+
+    #[test]
+    fn layer_is_logic() {
+        assert!(matches!(KaniRunner.layer(), crate::plugin::Layer::Logic));
+    }
+
+    #[test]
+    fn skip_message_nonempty() {
+        assert!(!KaniRunner.skip_message().is_empty());
+        assert!(KaniRunner.skip_message().contains("kani::proof"));
+    }
+
+    // ── has_kani_harnesses ────────────────────────────────────────────────────
+
+    #[test]
+    fn detects_kani_proof_annotation() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), b"#[kani::proof]\nfn verify() {}").unwrap();
+        assert!(has_kani_harnesses(dir.path()));
+    }
+
+    #[test]
+    fn returns_false_when_no_annotation() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), b"fn main() {}").unwrap();
+        assert!(!has_kani_harnesses(dir.path()));
+    }
+
+    #[test]
+    fn returns_false_when_no_src_dir() {
+        let dir = tempdir().unwrap();
+        assert!(!has_kani_harnesses(dir.path()));
+    }
+
+    #[test]
+    fn detects_annotation_in_subdirectory() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("src").join("auth");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("verify.rs"), b"#[kani::proof]\nfn check() {}").unwrap();
+        assert!(has_kani_harnesses(dir.path()));
+    }
+
+    // ── parse_kani_output ─────────────────────────────────────────────────────
+
+    #[test]
+    fn counts_successful_verifications() {
+        let output = "VERIFICATION:- SUCCESSFUL\nVERIFICATION:- SUCCESSFUL";
+        let (verified, failed) = parse_kani_output(output);
+        assert_eq!(verified, 2);
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn counts_failed_verifications() {
+        let output = "VERIFICATION:- FAILED\nVERIFICATION:- SUCCESSFUL\nVERIFICATION:- FAILED";
+        let (verified, failed) = parse_kani_output(output);
+        assert_eq!(verified, 1);
+        assert_eq!(failed, 2);
+    }
+
+    #[test]
+    fn empty_output_returns_zeros() {
+        let (v, f) = parse_kani_output("");
+        assert_eq!(v, 0);
+        assert_eq!(f, 0);
+    }
+
+    // ── extract_kani_failures ─────────────────────────────────────────────────
+
+    #[test]
+    fn returns_fallback_finding_when_no_harness_info() {
+        let output = "VERIFICATION:- FAILED";
+        let findings = extract_kani_failures(output);
+        assert!(!findings.is_empty());
+        assert!(matches!(
+            findings.iter().find(|f| matches!(f.severity, Severity::Critical | Severity::High)),
+            Some(_)
+        ));
+    }
+
+    #[test]
+    fn extracts_harness_name_when_present() {
+        let output = "Checking harness my_proof_harness\nVERIFICATION:- FAILED";
+        let findings = extract_kani_failures(output);
+        assert!(findings[0].message.contains("my_proof_harness"));
+    }
+
+    #[test]
+    fn generic_finding_when_no_failed_line() {
+        let findings = extract_kani_failures("no failures here");
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0].severity, Severity::High));
+    }
+
+    proptest! {
+        #[test]
+        fn parse_kani_output_never_panics(s in ".*") {
+            let _ = parse_kani_output(&s);
+        }
+
+        #[test]
+        fn extract_kani_failures_never_panics(s in ".*") {
+            let _ = extract_kani_failures(&s);
+        }
+    }
+}

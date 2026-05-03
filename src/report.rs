@@ -279,6 +279,142 @@ mod tests {
         assert_eq!(report.status, ReportStatus::Pass);
     }
 
+    // ── Display implementations ───────────────────────────────────────────────
+
+    #[test]
+    fn report_status_display() {
+        assert_eq!(ReportStatus::Pass.to_string(), "pass");
+        assert_eq!(ReportStatus::Partial.to_string(), "partial");
+        assert_eq!(ReportStatus::Fail.to_string(), "fail");
+    }
+
+    #[test]
+    fn layer_status_display() {
+        assert_eq!(LayerStatus::Pass.to_string(), "PASS");
+        assert_eq!(LayerStatus::Fail.to_string(), "FAIL");
+        assert_eq!(LayerStatus::Partial.to_string(), "PARTIAL");
+        assert_eq!(LayerStatus::Skipped.to_string(), "SKIPPED");
+    }
+
+    #[test]
+    fn severity_display() {
+        assert_eq!(Severity::Critical.to_string(), "CRITICAL");
+        assert_eq!(Severity::High.to_string(), "HIGH");
+        assert_eq!(Severity::Medium.to_string(), "MEDIUM");
+        assert_eq!(Severity::Low.to_string(), "LOW");
+        assert_eq!(Severity::Info.to_string(), "INFO");
+    }
+
+    // ── add_layer boundary conditions ─────────────────────────────────────────
+
+    #[test]
+    fn high_finding_makes_report_partial() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::High)]));
+        assert_eq!(report.status, ReportStatus::Partial);
+    }
+
+    #[test]
+    fn medium_finding_makes_report_partial() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::Medium)]));
+        assert_eq!(report.status, ReportStatus::Partial);
+    }
+
+    #[test]
+    fn low_finding_does_not_change_status_but_increments_count() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::Low)]));
+        assert_eq!(report.status, ReportStatus::Pass);
+        assert_eq!(report.summary.low, 1);  // catches low += 1 → *= 1 mutation
+    }
+
+    #[test]
+    fn medium_finding_increments_medium_count() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::Medium)]));
+        assert_eq!(report.summary.medium, 1);
+    }
+
+    #[test]
+    fn critical_overrides_partial() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::High)]));
+        assert_eq!(report.status, ReportStatus::Partial);
+        report.add_layer(layer_with_findings(vec![finding(Severity::Critical)]));
+        assert_eq!(report.status, ReportStatus::Fail);
+    }
+
+    #[test]
+    fn multiple_info_findings_count_in_total() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![
+            finding(Severity::Info),
+            finding(Severity::Info),
+            finding(Severity::Info),
+        ]));
+        assert_eq!(report.summary.total_findings, 3);
+        assert_eq!(report.status, ReportStatus::Pass); // info doesn't degrade
+    }
+
+    #[test]
+    fn summary_overall_status_matches_report_status() {
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::Critical)]));
+        assert_eq!(report.summary.overall_status, report.status);
+    }
+
+    // ── save / load ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_creates_file_in_reports_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = BarzelReport::new(dummy_project());
+        let path = report.save(dir.path()).unwrap();
+        assert!(path.exists());
+        assert!(path.extension().map(|e| e == "json").unwrap_or(false));
+    }
+
+    #[test]
+    fn load_latest_returns_saved_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = BarzelReport::new(dummy_project());
+        report.add_layer(layer_with_findings(vec![finding(Severity::Info)]));
+        let _ = report.save(dir.path()).unwrap();
+
+        let loaded = BarzelReport::load_latest(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.id, report.id);
+        assert_eq!(loaded.summary.total_findings, 1);
+    }
+
+    #[test]
+    fn load_latest_returns_none_when_no_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = BarzelReport::load_latest(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_by_id_finds_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = BarzelReport::new(dummy_project());
+        let id_prefix = &report.id[..8];
+        let _ = report.save(dir.path()).unwrap();
+
+        let loaded = BarzelReport::load_by_id(dir.path(), id_prefix).unwrap();
+        assert!(loaded.is_some());
+        assert_eq!(loaded.unwrap().id, report.id);
+    }
+
+    #[test]
+    fn load_by_id_returns_none_for_unknown_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = BarzelReport::new(dummy_project());
+        let _ = report.save(dir.path()).unwrap();
+        let result = BarzelReport::load_by_id(dir.path(), "00000000").unwrap();
+        assert!(result.is_none());
+    }
+
     proptest! {
         #[test]
         fn total_findings_equals_sum_of_layer_findings(

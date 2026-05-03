@@ -190,3 +190,102 @@ fn infer_target_from_artifact(artifact_path: &str) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "fuzz_target_1".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // ── runner metadata ───────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_cargo_fuzz() {
+        assert_eq!(CargoFuzzRunner.name(), "cargo-fuzz");
+    }
+
+    #[test]
+    fn layer_is_hostile() {
+        assert!(matches!(CargoFuzzRunner.layer(), crate::plugin::Layer::Hostile));
+    }
+
+    #[test]
+    fn skip_message_nonempty() {
+        assert!(!CargoFuzzRunner.skip_message().is_empty());
+        assert!(CargoFuzzRunner.skip_message().contains("fuzz"));
+    }
+
+    // ── infer_target_from_artifact ────────────────────────────────────────────
+
+    #[test]
+    fn infers_target_name_from_path() {
+        let path = "/project/fuzz/artifacts/fuzz_target_1/crash-abc123";
+        assert_eq!(infer_target_from_artifact(path), "fuzz_target_1");
+    }
+
+    #[test]
+    fn fallback_for_root_path() {
+        assert_eq!(infer_target_from_artifact("crash"), "fuzz_target_1");
+    }
+
+    #[test]
+    fn fallback_for_empty_path() {
+        assert_eq!(infer_target_from_artifact(""), "fuzz_target_1");
+    }
+
+    // ── scan_target_directory ─────────────────────────────────────────────────
+
+    #[test]
+    fn finds_rust_fuzz_targets() {
+        let dir = tempdir().unwrap();
+        let targets_dir = dir.path().join("fuzz").join("fuzz_targets");
+        std::fs::create_dir_all(&targets_dir).unwrap();
+        std::fs::write(targets_dir.join("fuzz_json.rs"), b"#![no_main]").unwrap();
+        std::fs::write(targets_dir.join("fuzz_http.rs"), b"#![no_main]").unwrap();
+        std::fs::write(targets_dir.join("README.md"), b"docs").unwrap(); // should be ignored
+
+        let targets = scan_target_directory(dir.path());
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&"fuzz_json".to_string()));
+        assert!(targets.contains(&"fuzz_http".to_string()));
+    }
+
+    #[test]
+    fn returns_empty_when_no_targets_dir() {
+        let dir = tempdir().unwrap();
+        let targets = scan_target_directory(dir.path());
+        assert!(targets.is_empty());
+    }
+
+    // ── find_crash_artifacts ──────────────────────────────────────────────────
+
+    #[test]
+    fn finds_crash_files_in_artifacts_dir() {
+        let dir = tempdir().unwrap();
+        let crash_dir = dir.path().join("fuzz").join("artifacts").join("fuzz_target_1");
+        std::fs::create_dir_all(&crash_dir).unwrap();
+        std::fs::write(crash_dir.join("crash-deadbeef"), b"\x00\x01\x02").unwrap();
+        std::fs::write(crash_dir.join(".gitignore"), b"*").unwrap(); // should be ignored
+        std::fs::write(crash_dir.join("README.md"), b"docs").unwrap(); // should be ignored
+
+        let crashes = find_crash_artifacts(dir.path());
+        assert_eq!(crashes.len(), 1);
+        assert!(crashes[0].contains("crash-deadbeef"));
+    }
+
+    #[test]
+    fn returns_empty_when_no_artifacts_dir() {
+        let dir = tempdir().unwrap();
+        let crashes = find_crash_artifacts(dir.path());
+        assert!(crashes.is_empty());
+    }
+
+    #[test]
+    fn returns_empty_when_no_crash_files() {
+        let dir = tempdir().unwrap();
+        let crash_dir = dir.path().join("fuzz").join("artifacts").join("target_1");
+        std::fs::create_dir_all(&crash_dir).unwrap();
+        std::fs::write(crash_dir.join(".gitignore"), b"*").unwrap();
+        let crashes = find_crash_artifacts(dir.path());
+        assert!(crashes.is_empty());
+    }
+}

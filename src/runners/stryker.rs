@@ -182,6 +182,7 @@ fn parse_stryker_text_output(output: &str) -> Option<f64> {
 fn build_stryker_findings(mutation_score: Option<f64>, threshold: f64, _pm: &str) -> Vec<Finding> {
     match mutation_score {
         Some(score) if score >= threshold => vec![],
+
         Some(score) => vec![Finding {
             severity: Severity::High,
             code: "LOW_MUTATION_SCORE".to_string(),
@@ -206,5 +207,148 @@ fn build_stryker_findings(mutation_score: Option<f64>, threshold: f64, _pm: &str
             suggestion: None,
             ..Default::default()
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::{Language, ProjectInfo};
+    use proptest::prelude::*;
+    use tempfile::tempdir;
+
+    fn ts_project(root: &str) -> ProjectInfo {
+        ProjectInfo {
+            language: Language::TypeScript,
+            root: root.to_string(),
+            has_tests: true,
+            package_name: Some("my-app".to_string()),
+        }
+    }
+
+    // ── runner metadata ───────────────────────────────────────────────────────
+
+    #[test]
+    fn name_is_stryker() {
+        assert_eq!(StrykerRunner::default().name(), "stryker");
+    }
+
+    #[test]
+    fn layer_is_structural() {
+        assert!(matches!(StrykerRunner::default().layer(), crate::plugin::Layer::Structural));
+    }
+
+    #[test]
+    fn skip_message_is_nonempty() {
+        assert!(!StrykerRunner::default().skip_message().is_empty());
+    }
+
+    #[test]
+    fn not_available_for_non_typescript() {
+        let dir = tempdir().unwrap();
+        let info = ProjectInfo {
+            language: Language::Rust,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: false,
+            package_name: None,
+        };
+        assert!(!StrykerRunner::default().is_available(&info));
+    }
+
+    // ── build_stryker_findings ────────────────────────────────────────────────
+
+    #[test]
+    fn empty_findings_when_score_meets_threshold() {
+        assert!(build_stryker_findings(Some(95.0), 95.0, "pnpm").is_empty());
+        assert!(build_stryker_findings(Some(100.0), 95.0, "pnpm").is_empty());
+    }
+
+    #[test]
+    fn high_severity_when_below_threshold() {
+        let findings = build_stryker_findings(Some(60.0), 95.0, "pnpm");
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0].severity, Severity::High));
+        assert!(findings[0].message.contains("60.0%"));
+        assert!(findings[0].message.contains("95"));
+    }
+
+    #[test]
+    fn info_finding_when_no_score() {
+        let findings = build_stryker_findings(None, 95.0, "pnpm");
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0].severity, Severity::Info));
+    }
+
+    #[test]
+    fn boundary_exactly_at_threshold_passes() {
+        assert!(build_stryker_findings(Some(80.0), 80.0, "npm").is_empty());
+    }
+
+    // ── parse_stryker_text_output ─────────────────────────────────────────────
+
+    #[test]
+    fn parses_stryker_mutation_score_line() {
+        let output = "Mutation score: 87.50%";
+        let score = parse_stryker_text_output(output).unwrap();
+        assert!((score - 87.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn returns_none_for_empty_output() {
+        assert!(parse_stryker_text_output("").is_none());
+    }
+
+    // ── parse_stryker_report (JSON) ───────────────────────────────────────────
+
+    #[test]
+    fn parses_json_mutation_report() {
+        let dir = tempdir().unwrap();
+        let report_dir = dir.path().join("reports").join("mutation");
+        std::fs::create_dir_all(&report_dir).unwrap();
+
+        let json = r#"{
+            "schemaVersion": "1",
+            "files": {
+                "src/foo.ts": {
+                    "mutants": [
+                        {"status": "Killed"},
+                        {"status": "Killed"},
+                        {"status": "Survived"},
+                        {"status": "NoCoverage"}
+                    ]
+                }
+            }
+        }"#;
+        let report_path = report_dir.join("mutation.json");
+        std::fs::write(&report_path, json).unwrap();
+
+        let score = parse_stryker_report(&report_path).unwrap();
+        // killed=2, survived=1, no_coverage=1, total=4 → 2/4 = 50%
+        assert!((score - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn perfect_score_when_all_killed() {
+        let dir = tempdir().unwrap();
+        let json = r#"{"files":{"f.ts":{"mutants":[{"status":"Killed"},{"status":"Killed"}]}}}"#;
+        let path = dir.path().join("r.json");
+        std::fs::write(&path, json).unwrap();
+        let score = parse_stryker_report(&path).unwrap();
+        assert!((score - 100.0).abs() < 0.01);
+    }
+
+    proptest! {
+        #[test]
+        fn build_stryker_findings_never_panics(
+            score in proptest::option::of(0.0f64..100.0f64),
+            threshold in 0.0f64..100.0f64,
+        ) {
+            let _ = build_stryker_findings(score, threshold, "npm");
+        }
+
+        #[test]
+        fn parse_stryker_text_never_panics(s in ".*") {
+            let _ = parse_stryker_text_output(&s);
+        }
     }
 }
