@@ -1,5 +1,6 @@
 use crate::config::BarzelConfig;
 use crate::detect::{detect_workspace, Language, ProjectInfo, WorkspaceInfo};
+use crate::diff::DiffContext;
 use crate::error::Result;
 use crate::orchestrator::VerificationOrchestrator;
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
@@ -36,10 +37,33 @@ pub fn run_verification(
     fail_fast: bool,
     stdio: bool,
     json_out: bool,
+    since: Option<&str>,
 ) -> Result<BarzelReport> {
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let workspace = detect_workspace(target_path)?;
     let cfg = BarzelConfig::load_for_project(target_path);
+
+    // Resolve diff context when --since is provided.
+    // If git lookup fails (not a git repo, bad rev), warn and fall back to full run.
+    // diff_fallback tracks the requested rev so we can expose it in the report even on fallback.
+    let (diff, diff_fallback_reason): (Option<DiffContext>, Option<String>) = match since {
+        None => (None, None),
+        Some(rev) => match DiffContext::since(target_path, rev) {
+            Some(ctx) => (Some(ctx), None),
+            None => {
+                let reason = "not a git repository or invalid revision".to_string();
+                if !stdio && !json_out {
+                    eprintln!(
+                        "{} --since {}: {} — running full suite",
+                        "barzel:".yellow(),
+                        rev,
+                        reason
+                    );
+                }
+                (None, Some(reason))
+            }
+        },
+    };
 
     match workspace {
         WorkspaceInfo::Single(project) => {
@@ -52,19 +76,77 @@ pub fn run_verification(
                 );
                 println!();
             }
+
+            // Diff mode: skip if nothing in this project changed (and no root manifest changed)
+            if let Some(ref ctx) = diff {
+                let project_root = Path::new(&project.root);
+                if !ctx.forces_full_run() && !ctx.affects_path(project_root) {
+                    if !stdio && !json_out {
+                        println!(
+                            "  {} no changed files in project (--since {} — {})",
+                            "↷".dimmed(),
+                            since.unwrap_or(""),
+                            ctx.summary()
+                        );
+                        println!();
+                    }
+                    let mut report = skip_report(&project, since, ctx);
+                    report.fail_on = cfg.reporting.fail_on.clone();
+                    emit_report(&report, stdio, json_out, target_path)?;
+                    return Ok(report);
+                }
+            }
+
             let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio)?;
             report.fail_on = cfg.reporting.fail_on.clone();
+            // Record diff metadata whether diff succeeded or fell back
+            report.diff_since = since.map(str::to_string);
+            if let Some(ref ctx) = diff {
+                report.diff_changed_files = Some(ctx.changed_files.len());
+            } else {
+                report.diff_fallback_reason = diff_fallback_reason.clone();
+            }
             emit_report(&report, stdio, json_out, target_path)?;
             Ok(report)
         }
 
         WorkspaceInfo::Multi { kind, members } => {
+            // Determine which members to run
+            let active_members: Vec<&(String, ProjectInfo)> = if let Some(ref ctx) = diff {
+                if ctx.forces_full_run() {
+                    if !stdio && !json_out {
+                        println!(
+                            "  {} root manifest/lockfile changed — running all {} package(s)",
+                            "↷".dimmed(),
+                            members.len()
+                        );
+                    }
+                    members.iter().collect()
+                } else {
+                    let affected: Vec<&(String, ProjectInfo)> = members.iter()
+                        .filter(|(_, m)| ctx.affects_path(Path::new(&m.root)))
+                        .collect();
+                    if !stdio && !json_out && affected.len() < members.len() {
+                        println!(
+                            "  {} diff mode: {}/{} package(s) affected (--since {})",
+                            "↷".dimmed(),
+                            affected.len(),
+                            members.len(),
+                            since.unwrap_or("")
+                        );
+                    }
+                    affected
+                }
+            } else {
+                members.iter().collect()
+            };
+
             if !stdio && !json_out {
                 println!(
                     "{} {} workspace — {} package(s) at {}",
                     "→".bright_blue(),
                     kind.to_string().bright_green(),
-                    members.len(),
+                    active_members.len(),
                     target_path.display().to_string().bright_cyan()
                 );
                 println!();
@@ -80,8 +162,52 @@ pub fn run_verification(
             };
             let mut aggregate = BarzelReport::new(workspace_project);
             aggregate.fail_on = cfg.reporting.fail_on.clone();
+            // Record diff metadata whether diff succeeded or fell back
+            aggregate.diff_since = since.map(str::to_string);
+            if let Some(ref ctx) = diff {
+                aggregate.diff_changed_files = Some(ctx.changed_files.len());
+            } else {
+                aggregate.diff_fallback_reason = diff_fallback_reason.clone();
+            }
 
-            for (pkg_path, member) in &members {
+            // When diff mode filtered to zero members, return a workspace-level skip report
+            if active_members.is_empty() {
+                if let Some(ref ctx) = diff {
+                    use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+                    if !stdio && !json_out {
+                        println!(
+                            "  {} no packages affected (--since {} — {})",
+                            "↷".dimmed(),
+                            since.unwrap_or(""),
+                            ctx.summary()
+                        );
+                        println!();
+                    }
+                    aggregate.layers.push(LayerResult {
+                        name: "skipped".to_string(),
+                        runner: "diff".to_string(),
+                        status: LayerStatus::Skipped,
+                        findings: vec![Finding {
+                            severity: Severity::Info,
+                            code: "NO_CHANGES_SINCE_REV".to_string(),
+                            message: format!(
+                                "No workspace packages affected since {} ({})",
+                                since.unwrap_or(""),
+                                ctx.summary()
+                            ),
+                            location: None,
+                            reproduce_cmd: Some(format!("git diff --name-only {} --", since.unwrap_or(""))),
+                            suggestion: None,
+                        }],
+                        metrics: LayerMetrics::default(),
+                        duration_ms: 0,
+                    });
+                    emit_report(&aggregate, stdio, json_out, target_path)?;
+                    return Ok(aggregate);
+                }
+            }
+
+            for (pkg_path, member) in &active_members {
                 if !stdio && !json_out {
                     println!("  {} {}", "package:".dimmed(), pkg_path.bright_white());
                 }
@@ -97,7 +223,7 @@ pub fn run_verification(
                 // Store per-package report for rich stdio output
                 use crate::report::WorkspaceMemberReport;
                 aggregate.workspace_members.push(WorkspaceMemberReport {
-                    package_path: pkg_path.clone(),
+                    package_path: pkg_path.to_string(),
                     language: member.language.to_string(),
                     status: member_report.status,
                     layers: member_report.layers.clone(),
@@ -114,6 +240,35 @@ pub fn run_verification(
             Ok(aggregate)
         }
     }
+}
+
+/// Produce a passing report representing a project that was skipped because
+/// no files changed since the given revision.
+fn skip_report(project: &ProjectInfo, since: Option<&str>, ctx: &DiffContext) -> BarzelReport {
+    use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+    let mut report = BarzelReport::new(project.clone());
+    report.diff_since = since.map(str::to_string);
+    report.diff_changed_files = Some(ctx.changed_files.len());
+    report.layers.push(LayerResult {
+        name: "skipped".to_string(),
+        runner: "diff".to_string(),
+        status: LayerStatus::Skipped,
+        findings: vec![Finding {
+            severity: Severity::Info,
+            code: "NO_CHANGES_SINCE_REV".to_string(),
+            message: format!(
+                "No source files changed since {} ({})",
+                since.unwrap_or(""),
+                ctx.summary()
+            ),
+            location: None,
+            reproduce_cmd: Some(format!("git diff --name-only {} --", since.unwrap_or(""))),
+            suggestion: None,
+        }],
+        metrics: LayerMetrics::default(),
+        duration_ms: 0,
+    });
+    report
 }
 
 /// Execute runners for a single `ProjectInfo` and return the report.
@@ -496,5 +651,59 @@ mod tests {
         let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 30.0, LayerStatus::Fail));
         apply_coverage_threshold(&mut report, Some(80.0));
         assert!(matches!(report.layers[0].status, LayerStatus::Fail));
+    }
+
+    // ── skip_report ───────────────────────────────────────────────────────────
+
+    fn diff_ctx_empty() -> crate::diff::DiffContext {
+        crate::diff::DiffContext {
+            changed_files: vec![],
+            repo_root: std::path::PathBuf::from("/tmp"),
+        }
+    }
+
+    fn project_info() -> crate::detect::ProjectInfo {
+        crate::detect::ProjectInfo {
+            language: Language::Python,
+            root: "/tmp/myproj".to_string(),
+            has_tests: true,
+            package_name: Some("myproj".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        }
+    }
+
+    #[test]
+    fn skip_report_has_no_changes_finding() {
+        let ctx = diff_ctx_empty();
+        let report = skip_report(&project_info(), Some("HEAD~1"), &ctx);
+        assert!(report.layers.iter().any(|l| l.runner == "diff"));
+        let layer = report.layers.iter().find(|l| l.runner == "diff").unwrap();
+        assert!(matches!(layer.status, LayerStatus::Skipped));
+        assert!(layer.findings.iter().any(|f| f.code == "NO_CHANGES_SINCE_REV"));
+    }
+
+    #[test]
+    fn skip_report_finding_has_reproduce_cmd() {
+        let ctx = diff_ctx_empty();
+        let report = skip_report(&project_info(), Some("abc123"), &ctx);
+        let finding = report.layers[0].findings.iter()
+            .find(|f| f.code == "NO_CHANGES_SINCE_REV").unwrap();
+        assert!(finding.reproduce_cmd.is_some());
+        assert!(finding.reproduce_cmd.as_ref().unwrap().contains("abc123"));
+    }
+
+    #[test]
+    fn skip_report_records_diff_since() {
+        let ctx = diff_ctx_empty();
+        let report = skip_report(&project_info(), Some("main"), &ctx);
+        assert_eq!(report.diff_since, Some("main".to_string()));
+        assert_eq!(report.diff_changed_files, Some(0));
+    }
+
+    #[test]
+    fn skip_report_status_is_pass() {
+        let ctx = diff_ctx_empty();
+        let report = skip_report(&project_info(), Some("HEAD"), &ctx);
+        assert!(matches!(report.status, ReportStatus::Pass));
     }
 }

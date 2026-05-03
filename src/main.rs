@@ -2,6 +2,7 @@ mod cache;
 mod cli;
 mod config;
 mod detect;
+mod diff;
 mod error;
 mod init;
 mod orchestrator;
@@ -36,6 +37,9 @@ struct StdioRequest {
     fail_fast: bool,
     #[serde(default)]
     request_id: Option<String>,
+    /// Git revision for diff mode: only verify packages changed since this rev.
+    #[serde(default)]
+    since: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -127,7 +131,8 @@ fn handle_stdio() -> ExitCode {
 
         "run" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true, false) {
+            let since = req.since.as_deref();
+            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true, false, since) {
                 Ok(report) => {
                     let exit_code = report_exit_code(&report);
                     let data = build_run_data(&report);
@@ -299,6 +304,17 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
     if is_workspace {
         payload["is_workspace"] = serde_json::Value::Bool(true);
         payload["packages"] = serde_json::Value::Array(workspace_json);
+    }
+
+    // Expose diff mode metadata so agents know whether the run was scoped
+    if report.diff_since.is_some() {
+        let active = report.diff_changed_files.is_some();
+        payload["diff_mode"] = serde_json::json!({
+            "active":        active,
+            "since":         report.diff_since,
+            "changed_files": report.diff_changed_files,
+            "fallback_reason": report.diff_fallback_reason,
+        });
     }
 
     payload
@@ -549,8 +565,8 @@ fn main() -> ExitCode {
             }
         },
 
-        Commands::Run { path, layer, no_cache, fail_fast, json } => {
-            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false, json) {
+        Commands::Run { path, layer, no_cache, fail_fast, json, since } => {
+            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false, json, since.as_deref()) {
                 Ok(report) => report_exit_code(&report),
                 Err(e) => {
                     eprintln!("{} {}", "Error:".bright_red(), e);

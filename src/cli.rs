@@ -43,6 +43,12 @@ pub enum Commands {
         /// Output the full JSON report to stdout (for scripting)
         #[arg(long)]
         json: bool,
+
+        /// Only verify packages/projects affected since this git revision
+        /// (e.g. --since HEAD~1, --since main, --since abc123).
+        /// Always runs security/audit runners when lockfiles change.
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Show the last report or a specific report
