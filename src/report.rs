@@ -13,7 +13,12 @@ pub struct BarzelReport {
     pub layers: Vec<LayerResult>,
     pub summary: Summary,
     pub status: ReportStatus,
+    /// Minimum severity from config that triggers a non-zero exit: critical | high | medium | any
+    #[serde(default = "default_fail_on")]
+    pub fail_on: String,
 }
+
+fn default_fail_on() -> String { "high".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerResult {
@@ -117,6 +122,7 @@ impl BarzelReport {
                 overall_status: ReportStatus::Pass,
             },
             status: ReportStatus::Pass,
+            fail_on: "high".to_string(),
         }
     }
 

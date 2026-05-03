@@ -4,6 +4,7 @@ pub mod cargo_fuzz;
 pub mod fastcheck;
 pub mod go_mutesting;
 pub mod gotest;
+pub mod jest;
 pub mod kani;
 pub mod mutants;
 pub mod mutmut;

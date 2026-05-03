@@ -8,6 +8,7 @@ use crate::runners::bandit::BanditRunner;
 use crate::runners::mutmut::MutmutRunner;
 use crate::runners::cargo_fuzz::CargoFuzzRunner;
 use crate::runners::fastcheck::FastCheckRunner;
+use crate::runners::jest::JestRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
 use crate::runners::gotest::GoTestRunner;
 use crate::runners::kani::KaniRunner;
@@ -51,6 +52,7 @@ pub fn run_verification(
     let mutants = MutantsRunner::with_threshold(threshold);
     let cargo_fuzz = CargoFuzzRunner::default();
     let fastcheck = FastCheckRunner::default();
+    let jest = JestRunner::default();
     let stryker = StrykerRunner::with_threshold(threshold);
     let gotest = GoTestRunner::default();
     let go_mutesting = GoMutestingRunner::with_threshold(threshold);
@@ -63,7 +65,7 @@ pub fn run_verification(
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
         Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &semgrep],
-        Language::TypeScript => vec![&fastcheck, &stryker, &playwright, &semgrep],
+        Language::TypeScript => vec![&jest, &fastcheck, &stryker, &playwright, &semgrep],
         Language::Python => vec![&pytest, &mutmut, &bandit, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
@@ -96,7 +98,7 @@ pub fn run_verification(
         orchestrator = orchestrator.with_fail_fast();
     }
 
-    let report = if stdio {
+    let mut report = if stdio {
         orchestrator.run(&project)?
     } else {
         let pb = make_spinner();
@@ -113,6 +115,9 @@ pub fn run_verification(
         pb.finish_and_clear();
         r
     };
+
+    // Apply fail_on threshold from config — overrides report's internal status
+    report.fail_on = cfg.reporting.fail_on.clone();
 
     if !stdio {
         print_human_report(&report);
