@@ -736,6 +736,7 @@ mod tests {
             has_tests: true,
             package_name: Some("cargo-workspace".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
         report.status = ReportStatus::Fail;
@@ -829,6 +830,7 @@ mod tests {
             has_tests: true,
             package_name: Some("myapp".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
         report.layers = vec![make_layer("hostile", "bandit", vec![
@@ -852,6 +854,7 @@ mod tests {
             has_tests: true,
             package_name: Some("proj".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         BarzelReport::new(project)
     }

@@ -258,7 +258,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn py_info() -> ProjectInfo {
-        ProjectInfo { language: Language::Python, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Python, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> PytestRunner {
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn not_available_for_rust() {
         let r = PytestRunner { proc: Arc::new(MockProcessRunner::passing("")) };
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 

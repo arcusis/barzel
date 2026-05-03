@@ -122,7 +122,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn info(language: Language) -> ProjectInfo {
-        ProjectInfo { language, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> ProptestRunner {
@@ -153,7 +153,7 @@ mod tests {
     fn not_available_when_proptest_missing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
-        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!ProptestRunner::default().is_available(&i));
     }
 
@@ -161,7 +161,7 @@ mod tests {
     fn available_when_proptest_in_toml() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), b"[dev-dependencies]\nproptest=\"1.0\"").unwrap();
-        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(ProptestRunner::default().is_available(&i));
     }
 

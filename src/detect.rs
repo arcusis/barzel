@@ -41,6 +41,10 @@ pub struct ProjectInfo {
     pub package_name: Option<String>,
     #[serde(default)]
     pub frameworks: ProjectFrameworks,
+    /// Absolute path to the workspace root, when this project is a workspace member.
+    /// Absent for single-project repos and the synthetic workspace-root project itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
 }
 
 /// Result of workspace detection.
@@ -84,11 +88,13 @@ impl std::fmt::Display for WorkspaceKind {
 pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
+    let root_str = root.to_string_lossy().to_string();
+
     // Cargo workspace: root Cargo.toml with [workspace] section
     if root.join("Cargo.toml").exists() {
         let content = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
         if content.contains("[workspace]") {
-            let members = parse_cargo_workspace_members(&root, &content);
+            let members = stamp_workspace_root(parse_cargo_workspace_members(&root, &content), &root_str);
             if !members.is_empty() {
                 return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Cargo, members });
             }
@@ -98,7 +104,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     // pnpm workspace: pnpm-workspace.yaml
     if root.join("pnpm-workspace.yaml").exists() {
         let content = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap_or_default();
-        let members = expand_glob_patterns(&root, &content);
+        let members = stamp_workspace_root(expand_glob_patterns(&root, &content), &root_str);
         if !members.is_empty() {
             return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Pnpm, members });
         }
@@ -108,7 +114,7 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     if root.join("package.json").exists() {
         let pkg = std::fs::read_to_string(root.join("package.json")).unwrap_or_default();
         if pkg.contains("\"workspaces\"") {
-            let members = parse_npm_workspace_members(&root, &pkg);
+            let members = stamp_workspace_root(parse_npm_workspace_members(&root, &pkg), &root_str);
             if !members.is_empty() {
                 let kind = if root.join("turbo.json").exists() { WorkspaceKind::Turbo } else { WorkspaceKind::Npm };
                 return Ok(WorkspaceInfo::Multi { kind, members });
@@ -119,13 +125,21 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     // lerna.json without npm workspaces
     if root.join("lerna.json").exists() {
         let content = std::fs::read_to_string(root.join("lerna.json")).unwrap_or_default();
-        let members = parse_lerna_members(&root, &content);
+        let members = stamp_workspace_root(parse_lerna_members(&root, &content), &root_str);
         if !members.is_empty() {
             return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Lerna, members });
         }
     }
 
     Ok(WorkspaceInfo::Single(detect_project(path)?))
+}
+
+/// Set `workspace_root` on every member to the detected workspace root path.
+fn stamp_workspace_root(members: Vec<(String, ProjectInfo)>, root: &str) -> Vec<(String, ProjectInfo)> {
+    members.into_iter().map(|(rel, mut info)| {
+        info.workspace_root = Some(root.to_string());
+        (rel, info)
+    }).collect()
 }
 
 /// Returns `(relative_path, ProjectInfo)` pairs from Cargo.toml [workspace] members list.
@@ -255,6 +269,7 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
                 has_ai_deps: !ai_frameworks.is_empty(),
                 ai_frameworks,
             },
+            workspace_root: None,
         });
     }
 
@@ -281,6 +296,7 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
                 has_ai_deps: !ai_frameworks.is_empty(),
                 ai_frameworks,
             },
+            workspace_root: None,
         });
     }
 
@@ -303,6 +319,7 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
                 has_ai_deps: !ai_frameworks.is_empty(),
                 ai_frameworks,
             },
+            workspace_root: None,
         });
     }
 
@@ -321,6 +338,7 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
                 has_ai_deps: !ai_frameworks.is_empty(),
                 ai_frameworks,
             },
+            workspace_root: None,
         });
     }
 
@@ -330,6 +348,7 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
         has_tests: false,
         package_name: None,
         frameworks: ProjectFrameworks::default(),
+        workspace_root: None,
     })
 }
 
@@ -860,5 +879,65 @@ mod tests {
 
         let ws = detect_workspace(dir.path()).unwrap();
         assert!(matches!(ws, WorkspaceInfo::Multi { kind: WorkspaceKind::Turbo, .. }));
+    }
+
+    #[test]
+    fn cargo_workspace_members_have_workspace_root_set() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n").unwrap();
+        let a = dir.path().join("crates/a");
+        let b = dir.path().join("crates/b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("Cargo.toml"), b"[package]\nname=\"a\"").unwrap();
+        fs::write(b.join("Cargo.toml"), b"[package]\nname=\"b\"").unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                for (_, info) in &members {
+                    assert!(info.workspace_root.is_some(),
+                        "each Cargo workspace member must have workspace_root set");
+                    let ws_root = info.workspace_root.as_deref().unwrap();
+                    let ws_root_path = std::path::Path::new(ws_root);
+                    assert!(ws_root_path.join("Cargo.toml").exists(),
+                        "workspace_root must point to the directory containing the workspace Cargo.toml");
+                }
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn pnpm_workspace_members_have_workspace_root_set() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-workspace.yaml"), b"packages:\n  - 'apps/*'\n").unwrap();
+        let app = dir.path().join("apps/web");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("package.json"), br#"{"name":"web"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let (_, info) = &members[0];
+                assert!(info.workspace_root.is_some());
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn single_project_workspace_root_is_none() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"solo\"").unwrap();
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Single(info) => {
+                assert!(info.workspace_root.is_none(),
+                    "single-project workspace_root must be None");
+            }
+            _ => panic!("Expected Single"),
+        }
     }
 }

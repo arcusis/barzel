@@ -206,7 +206,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ts_info(root: &str) -> ProjectInfo {
-        ProjectInfo { language: Language::TypeScript, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::TypeScript, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> FastCheckRunner {
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn not_available_for_rust() {
         let dir = tempdir().unwrap();
-        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!FastCheckRunner::default().is_available(&info));
     }
 
@@ -243,7 +243,7 @@ mod tests {
     fn available_when_fast_check_in_package_json() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"fast-check":"3.0"}}"#).unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(FastCheckRunner::default().is_available(&info));
     }
 
@@ -251,7 +251,7 @@ mod tests {
     fn not_available_when_fast_check_missing_from_package_json() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{}}"#).unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!FastCheckRunner::default().is_available(&info));
     }
 

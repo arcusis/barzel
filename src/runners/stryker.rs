@@ -224,6 +224,7 @@ mod tests {
             has_tests: true,
             package_name: Some("my-app".to_string()),
             frameworks: Default::default(),
+            workspace_root: None,
         }
     }
 
@@ -257,6 +258,7 @@ mod tests {
             has_tests: false,
             package_name: None,
             frameworks: Default::default(),
+            workspace_root: None,
         };
         assert!(!StrykerRunner::default().is_available(&info));
     }
@@ -270,7 +272,7 @@ mod tests {
             dir.path().join("package.json"),
             br#"{"devDependencies":{"@stryker-mutator/core":"7.0"}}"#,
         ).unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(StrykerRunner::default().is_available(&info));
     }
 
@@ -278,7 +280,7 @@ mod tests {
     fn available_when_stryker_config_present() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("stryker.config.mjs"), b"export default {}").unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(StrykerRunner::default().is_available(&info));
     }
 

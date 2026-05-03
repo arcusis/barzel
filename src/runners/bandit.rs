@@ -159,6 +159,7 @@ mod tests {
             has_tests: true,
             package_name: None,
             frameworks: Default::default(),
+            workspace_root: None,
         }
     }
 
@@ -171,7 +172,7 @@ mod tests {
     #[test]
     fn not_available_for_rust() {
         let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 

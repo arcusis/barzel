@@ -199,7 +199,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info(root: &str) -> ProjectInfo {
-        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> CargoFuzzRunner {
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn not_available_for_go() {
         let dir = tempdir().unwrap();
-        let info = ProjectInfo { language: Language::Go, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Go, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!CargoFuzzRunner::default().is_available(&info));
     }
 

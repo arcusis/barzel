@@ -292,6 +292,7 @@ mod tests {
             has_tests: true,
             package_name: Some("test".to_string()),
             frameworks: Default::default(),
+            workspace_root: None,
         }
     }
 
