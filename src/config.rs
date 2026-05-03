@@ -28,7 +28,38 @@ pub struct LayersConfig {
 pub struct OperationalConfig {
     #[serde(default)]
     pub health_checks: Vec<HealthCheckConfig>,
+    #[serde(default)]
+    pub commands: Vec<OperationalCommandConfig>,
 }
+
+/// A custom command to run during the Operational layer.
+///
+/// ```toml
+/// [[layers.operational.commands]]
+/// name    = "db-migrate-check"
+/// cmd     = "python"
+/// args    = ["manage.py", "migrate", "--check"]
+/// cwd     = "backend"   # relative to project root; omit to use project root
+/// timeout_ms = 10000
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationalCommandConfig {
+    /// Human-readable name shown in findings and report output.
+    pub name: String,
+    /// Binary/executable to run (no shell expansion).
+    pub cmd: String,
+    /// Arguments passed directly to the binary. Default: empty.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Working directory relative to the project root. Default: project root.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Timeout in milliseconds. Default: 30000.
+    #[serde(default = "default_command_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_command_timeout_ms() -> u64 { 30_000 }
 
 /// A single HTTP health-check endpoint to verify during the Operational layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,5 +478,102 @@ fail_on = "high"
         let check = &cfg.layers.operational.health_checks[0];
         assert_eq!(check.expected_status, 200, "default expected_status is 200");
         assert_eq!(check.timeout_ms, 5000, "default timeout_ms is 5000");
+    }
+
+    #[test]
+    fn no_commands_section_defaults_to_empty() {
+        let cfg = BarzelConfig::default();
+        assert!(cfg.layers.operational.commands.is_empty(),
+            "no configured commands must produce empty vec by default");
+    }
+
+    #[test]
+    fn operational_commands_parse_from_toml() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[[layers.operational.commands]]
+name = "db-migrate-check"
+cmd = "python"
+args = ["manage.py", "migrate", "--check"]
+cwd = "backend"
+timeout_ms = 10000
+
+[[layers.operational.commands]]
+name = "lint"
+cmd = "ruff"
+args = ["check", "."]
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        let cmds = &cfg.layers.operational.commands;
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].name, "db-migrate-check");
+        assert_eq!(cmds[0].cmd, "python");
+        assert_eq!(cmds[0].args, ["manage.py", "migrate", "--check"]);
+        assert_eq!(cmds[0].cwd.as_deref(), Some("backend"));
+        assert_eq!(cmds[0].timeout_ms, 10000);
+        assert_eq!(cmds[1].name, "lint");
+        assert_eq!(cmds[1].cwd, None);
+        assert_eq!(cmds[1].timeout_ms, 30000, "default timeout_ms is 30000");
+    }
+
+    #[test]
+    fn existing_toml_without_commands_loads_cleanly() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[[layers.operational.health_checks]]
+name = "api"
+url = "http://localhost:3000/health"
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert!(cfg.layers.operational.commands.is_empty(),
+            ".barzel.toml without [[layers.operational.commands]] must load cleanly with empty commands");
     }
 }
