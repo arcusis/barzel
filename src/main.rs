@@ -142,8 +142,50 @@ fn handle_stdio() -> ExitCode {
             }
         }
 
+        "check" => {
+            let path = req.project_path.as_deref().map(Path::new);
+            match detect::detect_project(path.unwrap_or_else(|| std::path::Path::new("."))) {
+                Ok(project) => {
+                    use crate::process::{OsProcessRunner, SubprocessRunner};
+                    let proc = OsProcessRunner;
+                    let tools = [
+                        ("cargo", vec!["--version"], "core"),
+                        ("cargo mutants", vec!["mutants", "--version"], "structural"),
+                        ("semgrep", vec!["--version"], "hostile"),
+                        ("pytest", vec!["--version"], "logic"),
+                        ("mypy", vec!["--version"], "logic"),
+                        ("mutmut", vec!["--version"], "structural"),
+                        ("bandit", vec!["--version"], "hostile"),
+                        ("node", vec!["--version"], "core"),
+                        ("go", vec!["version"], "core"),
+                    ];
+                    let tool_status: Vec<serde_json::Value> = tools.iter().map(|(name, args, layer)| {
+                        let first = name.split_whitespace().next().unwrap_or(name);
+                        let available = proc.is_available(first, args);
+                        serde_json::json!({ "name": name, "layer": layer, "available": available })
+                    }).collect();
+
+                    let resp = create_response("success", request_id, Some(serde_json::json!({
+                        "language": project.language.to_string(),
+                        "frameworks": {
+                            "is_nextjs": project.frameworks.is_nextjs,
+                            "has_ai_deps": project.frameworks.has_ai_deps,
+                            "ai_frameworks": project.frameworks.ai_frameworks,
+                        },
+                        "tools": tool_status,
+                    })), None);
+                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    emit_error(request_id, e.to_string());
+                    ExitCode::from(1)
+                }
+            }
+        }
+
         other => {
-            emit_error(request_id, format!("unknown command: {}", other));
+            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check", other));
             ExitCode::from(1)
         }
     }
