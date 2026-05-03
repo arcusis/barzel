@@ -112,3 +112,121 @@ impl BarzelConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::{Language, ProjectInfo};
+    use tempfile::tempdir;
+
+    fn rust_info(name: &str) -> ProjectInfo {
+        ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: true,
+            package_name: Some(name.to_string()),
+        }
+    }
+
+    // ── load_for_project ──────────────────────────────────────────────────────
+
+    #[test]
+    fn load_for_project_returns_default_when_no_file() {
+        let dir = tempdir().unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        let def = BarzelConfig::default();
+        assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
+        assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
+    }
+
+    #[test]
+    fn load_for_project_reads_barzel_toml() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "loaded-project"
+language = "rust"
+
+[layers]
+enabled = ["logic"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 80.0
+
+[layers.hostile]
+fuzzing = false
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "critical"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(cfg.project.name, "loaded-project");
+        assert_eq!(cfg.layers.structural.mutation_threshold, 80.0);
+        assert_eq!(cfg.reporting.fail_on, "critical");
+        assert_eq!(cfg.layers.enabled, vec!["logic"]);
+    }
+
+    #[test]
+    fn load_for_project_falls_back_on_invalid_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".barzel.toml"), b"not: valid: toml: {{").unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        // Should silently fall back to default
+        let def = BarzelConfig::default();
+        assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
+    }
+
+    // ── from_project_info ─────────────────────────────────────────────────────
+
+    #[test]
+    fn from_project_info_sets_name_and_language() {
+        let cfg = BarzelConfig::from_project_info(&rust_info("my-crate"));
+        assert_eq!(cfg.project.name, "my-crate");
+        assert_eq!(cfg.project.language, "rust");
+    }
+
+    #[test]
+    fn from_project_info_defaults_name_when_none() {
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+        };
+        let cfg = BarzelConfig::from_project_info(&info);
+        assert_eq!(cfg.project.name, "project");
+        assert_eq!(cfg.project.language, "typescript");
+    }
+
+    // ── save / round-trip ─────────────────────────────────────────────────────
+
+    #[test]
+    fn save_creates_readable_toml_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".barzel.toml");
+        let cfg = BarzelConfig::from_project_info(&rust_info("test-crate"));
+        cfg.save(&path).unwrap();
+        assert!(path.exists());
+        let loaded = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(loaded.project.name, "test-crate");
+    }
+
+    #[test]
+    fn mutation_threshold_round_trips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".barzel.toml");
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = 80.0;
+        cfg.save(&path).unwrap();
+        let loaded = BarzelConfig::load_for_project(dir.path());
+        assert!((loaded.layers.structural.mutation_threshold - 80.0).abs() < 0.001);
+    }
+}
