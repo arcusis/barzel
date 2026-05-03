@@ -744,4 +744,54 @@ mod tests {
             assert!(item.get("package_path").is_none(), "single project action_items must not have package_path");
         }
     }
+
+    fn base_report() -> BarzelReport {
+        let project = ProjectInfo {
+            language: Language::Python,
+            root: "/tmp/proj".to_string(),
+            has_tests: true,
+            package_name: Some("proj".to_string()),
+            frameworks: ProjectFrameworks::default(),
+        };
+        BarzelReport::new(project)
+    }
+
+    #[test]
+    fn diff_mode_active_when_since_and_changed_files_set() {
+        let mut report = base_report();
+        report.diff_since = Some("HEAD~1".to_string());
+        report.diff_changed_files = Some(2);
+
+        let payload = build_run_data(&report);
+        let dm = &payload["diff_mode"];
+        assert_eq!(dm["active"].as_bool(), Some(true));
+        assert_eq!(dm["since"].as_str(), Some("HEAD~1"));
+        assert_eq!(dm["changed_files"].as_u64(), Some(2));
+        assert!(dm["fallback_reason"].is_null());
+    }
+
+    #[test]
+    fn diff_mode_inactive_when_fallback() {
+        let mut report = base_report();
+        report.diff_since = Some("bad-rev".to_string());
+        report.diff_changed_files = None;
+        report.diff_fallback_reason = Some("not a git repository or invalid revision".to_string());
+
+        let payload = build_run_data(&report);
+        let dm = &payload["diff_mode"];
+        assert_eq!(dm["active"].as_bool(), Some(false));
+        assert_eq!(dm["since"].as_str(), Some("bad-rev"));
+        assert!(dm["changed_files"].is_null());
+        assert_eq!(
+            dm["fallback_reason"].as_str(),
+            Some("not a git repository or invalid revision")
+        );
+    }
+
+    #[test]
+    fn diff_mode_absent_when_since_not_set() {
+        let report = base_report();
+        let payload = build_run_data(&report);
+        assert!(payload.get("diff_mode").is_none(), "diff_mode must be absent when --since not used");
+    }
 }
