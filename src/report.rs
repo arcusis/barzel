@@ -213,7 +213,7 @@ impl BarzelReport {
         let reports_dir = base_dir.join(".barzel").join("reports");
         std::fs::create_dir_all(&reports_dir)?;
 
-        let filename = format!("report-{}.json", self.timestamp.format("%Y%m%d-%H%M%S"));
+        let filename = format!("report-{}-{}.json", self.timestamp.format("%Y%m%d-%H%M%S"), &self.id[..8]);
         let path = reports_dir.join(filename);
 
         let content = serde_json::to_string_pretty(self)?;
