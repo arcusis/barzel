@@ -294,6 +294,7 @@ mod tests {
                 has_ai_deps: true,
                 ai_frameworks: vec!["OpenAI SDK".to_string()],
             },
+            workspace_root: None,
         }
     }
 
@@ -304,6 +305,7 @@ mod tests {
             has_tests: true,
             package_name: None,
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         }
     }
 

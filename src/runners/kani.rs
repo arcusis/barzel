@@ -205,7 +205,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info() -> ProjectInfo {
-        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> KaniRunner {
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn not_available_for_typescript() {
-        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!KaniRunner::default().is_available(&info));
     }
 
@@ -244,7 +244,7 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"#[kani::proof]\nfn verify() {}").unwrap();
-        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         let r = KaniRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         assert!(!r.is_available(&info));
     }
@@ -255,7 +255,7 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"fn main() {}").unwrap();
-        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         let r = KaniRunner { proc: Arc::new(MockProcessRunner::passing("kani 0.40")) };
         assert!(!r.is_available(&info));
     }
@@ -266,7 +266,7 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"#[kani::proof]\nfn verify() {}").unwrap();
-        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         let r = KaniRunner { proc: Arc::new(MockProcessRunner::passing("kani 0.40")) };
         assert!(r.is_available(&info));
     }

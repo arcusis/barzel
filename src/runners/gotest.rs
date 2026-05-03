@@ -190,7 +190,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn go_info() -> ProjectInfo {
-        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> GoTestRunner {
@@ -218,13 +218,13 @@ mod tests {
 
     #[test]
     fn not_available_for_rust() {
-        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!GoTestRunner::default().is_available(&info));
     }
 
     #[test]
     fn not_available_for_typescript() {
-        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!GoTestRunner::default().is_available(&info));
     }
 

@@ -159,6 +159,7 @@ pub fn run_verification(
                 has_tests: members.iter().any(|(_, m)| m.has_tests),
                 package_name: Some(format!("{}-workspace", kind)),
                 frameworks: Default::default(),
+            workspace_root: None,
             };
             let mut aggregate = BarzelReport::new(workspace_project);
             aggregate.fail_on = cfg.reporting.fail_on.clone();
@@ -530,6 +531,7 @@ mod tests {
             has_tests: true,
             package_name: Some("testpkg".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
         report.add_layer(layer);
@@ -609,6 +611,7 @@ mod tests {
             has_tests: true,
             package_name: Some("testpkg".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
         report.add_layer(LayerResult {
@@ -631,6 +634,7 @@ mod tests {
             has_tests: true,
             package_name: Some("testpkg".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
         report.add_layer(LayerResult {
@@ -669,6 +673,7 @@ mod tests {
             has_tests: true,
             package_name: Some("myproj".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         }
     }
 

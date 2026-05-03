@@ -158,6 +158,7 @@ mod tests {
                 has_ai_deps: false,
                 ai_frameworks: vec![],
             },
+            workspace_root: None,
         }
     }
 
@@ -200,6 +201,7 @@ mod tests {
             has_tests: false,
             package_name: None,
             frameworks: Default::default(),
+            workspace_root: None,
         };
         assert!(!PlaywrightRunner::default().is_available(&info));
     }

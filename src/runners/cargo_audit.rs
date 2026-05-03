@@ -157,7 +157,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info(root: &str) -> ProjectInfo {
-        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn not_available_for_typescript() {
         let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
-        let i = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 

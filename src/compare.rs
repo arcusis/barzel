@@ -387,6 +387,7 @@ mod tests {
             has_tests: true,
             package_name: Some("myapp".to_string()),
             frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
         }
     }
 

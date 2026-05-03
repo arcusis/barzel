@@ -162,6 +162,7 @@ mod tests {
             has_tests: true,
             package_name: Some("my-app".to_string()),
             frameworks: Default::default(),
+            workspace_root: None,
         }
     }
 
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn not_available_for_rust() {
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!NpmAuditRunner::default().is_available(&i));
     }
 

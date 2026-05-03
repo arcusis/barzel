@@ -170,7 +170,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn info(lang: Language) -> ProjectInfo {
-        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> GoMutestingRunner {

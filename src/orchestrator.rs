@@ -226,6 +226,7 @@ mod tests {
             has_tests: false,
             package_name: Some("test".to_string()),
             frameworks: Default::default(),
+            workspace_root: None,
         }
     }
 

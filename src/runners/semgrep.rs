@@ -47,6 +47,37 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Collect all custom rule paths for a run: workspace-root rules (sorted) come
+/// first, then package-root rules (sorted). Canonical paths deduplicate entries
+/// so that when `workspace_root == project.root` no rule is passed twice.
+fn collect_all_custom_rule_paths(project_root: &Path, workspace_root: Option<&str>) -> Vec<PathBuf> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    // Workspace-root rules first
+    if let Some(ws_root) = workspace_root {
+        let ws_path = Path::new(ws_root);
+        if ws_path != project_root {
+            for p in collect_custom_rule_paths(ws_path) {
+                let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+                if seen.insert(canonical) {
+                    result.push(p);
+                }
+            }
+        }
+    }
+
+    // Package-root rules
+    for p in collect_custom_rule_paths(project_root) {
+        let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+        if seen.insert(canonical) {
+            result.push(p);
+        }
+    }
+
+    result
+}
+
 /// Build the full semgrep argv as owned Strings.
 /// Shape: `--json --quiet --config <ruleset> [--config <rule>...] .`
 fn build_semgrep_args(ruleset: &str, custom_rules: &[PathBuf]) -> Vec<String> {
@@ -103,7 +134,9 @@ impl TestRunner for SemgrepRunner {
             Language::Unknown => "p/default",
         };
 
-        let custom_rules = collect_custom_rule_paths(root);
+        // Collect custom rules: workspace-root rules first (sorted), then package-root
+        // rules (sorted). Canonical paths deduplicate when workspace_root == project.root.
+        let custom_rules = collect_all_custom_rule_paths(root, project.workspace_root.as_deref());
         let args_owned = build_semgrep_args(ruleset, &custom_rules);
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
 
@@ -243,11 +276,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn info() -> ProjectInfo {
-        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn info_at(root: &str) -> ProjectInfo {
-        ProjectInfo { language: Language::Python, root: root.to_string(), has_tests: false, package_name: None, frameworks: Default::default() }
+        ProjectInfo { language: Language::Python, root: root.to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> SemgrepRunner {
@@ -583,6 +616,86 @@ mod tests {
         assert!(matches!(map_semgrep_severity("error"),   Severity::Critical));
         assert!(matches!(map_semgrep_severity("warning"), Severity::High));
         assert!(matches!(map_semgrep_severity("info"),    Severity::Info));
+    }
+
+    // ── collect_all_custom_rule_paths (workspace integration) ─────────────────
+
+    #[test]
+    fn workspace_rules_included_when_package_has_none() {
+        let dir = tempdir().unwrap();
+        // Workspace root has rules; package dir has none
+        let ws_rules = dir.path().join(".barzel/rules");
+        std::fs::create_dir_all(&ws_rules).unwrap();
+        std::fs::write(ws_rules.join("shared.yml"), b"rules:").unwrap();
+
+        let pkg = dir.path().join("packages/api");
+        std::fs::create_dir_all(&pkg).unwrap();
+
+        let paths = collect_all_custom_rule_paths(&pkg, Some(dir.path().to_str().unwrap()));
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("shared.yml"));
+    }
+
+    #[test]
+    fn both_workspace_and_package_rules_included_in_order() {
+        let dir = tempdir().unwrap();
+        // Workspace root rules
+        let ws_rules = dir.path().join(".barzel/rules");
+        std::fs::create_dir_all(&ws_rules).unwrap();
+        std::fs::write(ws_rules.join("ws-rule.yml"), b"rules:").unwrap();
+        // Package rules
+        let pkg = dir.path().join("packages/api");
+        let pkg_rules = pkg.join(".barzel/rules");
+        std::fs::create_dir_all(&pkg_rules).unwrap();
+        std::fs::write(pkg_rules.join("pkg-rule.yml"), b"rules:").unwrap();
+
+        let paths = collect_all_custom_rule_paths(&pkg, Some(dir.path().to_str().unwrap()));
+        assert_eq!(paths.len(), 2);
+        // Workspace rules come first
+        assert!(paths[0].to_string_lossy().contains("ws-rule.yml"));
+        assert!(paths[1].to_string_lossy().contains("pkg-rule.yml"));
+    }
+
+    #[test]
+    fn no_duplication_when_workspace_root_equals_project_root() {
+        let dir = tempdir().unwrap();
+        let rules = dir.path().join(".barzel/rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(rules.join("rule.yml"), b"rules:").unwrap();
+
+        // workspace_root == project.root → same dir, rules should appear once
+        let paths = collect_all_custom_rule_paths(dir.path(), Some(dir.path().to_str().unwrap()));
+        assert_eq!(paths.len(), 1, "rule must not be duplicated when workspace_root == project.root");
+    }
+
+    #[test]
+    fn run_includes_workspace_rules_for_package_with_none() {
+        use std::sync::Mutex;
+        struct CapturingProc(Mutex<Vec<Vec<String>>>);
+        impl SubprocessRunner for CapturingProc {
+            fn run(&self, _cmd: &str, args: &[&str], _cwd: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                self.0.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+                Ok(crate::process::ProcessOutput { stdout: r#"{"results":[]}"#.to_string(), stderr: String::new(), success: true })
+            }
+        }
+        let ws_dir = tempdir().unwrap();
+        let ws_rules = ws_dir.path().join(".barzel/rules");
+        std::fs::create_dir_all(&ws_rules).unwrap();
+        std::fs::write(ws_rules.join("shared.yml"), b"rules:").unwrap();
+
+        let pkg_dir = tempdir().unwrap(); // package has no local rules
+
+        let mut project = info_at(pkg_dir.path().to_str().unwrap());
+        project.workspace_root = Some(ws_dir.path().to_string_lossy().into_owned());
+
+        let captured = Arc::new(CapturingProc(Mutex::new(vec![])));
+        let runner = SemgrepRunner { proc: captured.clone() };
+        runner.run(&project).unwrap();
+
+        let calls = captured.0.lock().unwrap();
+        let args = &calls[0];
+        assert!(args.iter().any(|a| a.ends_with("shared.yml")),
+            "workspace-root rule must appear in semgrep argv");
     }
 
     proptest! {
