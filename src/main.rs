@@ -31,6 +31,10 @@ struct StdioRequest {
     #[serde(default)]
     layers: Option<Vec<String>>,
     #[serde(default)]
+    no_cache: bool,
+    #[serde(default)]
+    fail_fast: bool,
+    #[serde(default)]
     request_id: Option<String>,
 }
 
@@ -82,12 +86,33 @@ fn handle_stdio() -> ExitCode {
     match req.command.as_str() {
         "init" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match init::run_init(path, true) {
+            let target = path.unwrap_or_else(|| Path::new("."));
+            match init::run_init(Some(target), true) {
                 Ok(()) => {
+                    let project = detect::detect_project(target).ok();
                     let resp = create_response(
                         "success",
                         request_id,
-                        Some(serde_json::json!({ "message": "project initialized" })),
+                        Some(serde_json::json!({
+                            "message": "project initialized",
+                            "config_file": ".barzel.toml",
+                            "language": project.as_ref().map(|p| p.language.to_string()),
+                            "frameworks": project.as_ref().map(|p| serde_json::json!({
+                                "is_nextjs": p.frameworks.is_nextjs,
+                                "has_ai_deps": p.frameworks.has_ai_deps,
+                                "ai_frameworks": p.frameworks.ai_frameworks,
+                            })),
+                            "config_schema": {
+                                "layers.enabled": "list of layers to run: logic, structural, hostile, operational",
+                                "layers.structural.mutation_testing": "bool — enable mutation testing",
+                                "layers.structural.mutation_threshold": "float 0-100 — minimum mutation score to pass",
+                                "fail_on": "minimum severity to fail: critical, high, medium, low",
+                            },
+                            "next_steps": [
+                                "Run `barzel run` to verify your project",
+                                "Use `{\"command\":\"run\"}` via --stdio for agent-mode output",
+                            ]
+                        })),
                         None,
                     );
                     println!("{}", serde_json::to_string(&resp).unwrap());
@@ -102,7 +127,7 @@ fn handle_stdio() -> ExitCode {
 
         "run" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match run::run_verification(path, req.layers, false, false, true) {
+            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true) {
                 Ok(report) => {
                     let exit_code = report_exit_code(&report);
                     let data = build_run_data(&report);
@@ -128,8 +153,8 @@ fn handle_stdio() -> ExitCode {
 fn build_run_data(report: &BarzelReport) -> serde_json::Value {
     let passed = matches!(report.status, ReportStatus::Pass);
 
-    // Flatten all non-info findings into a prioritised action list
-    let action_items: Vec<serde_json::Value> = report
+    // Flatten all non-info findings into a prioritised action list, sorted by priority
+    let mut action_items: Vec<serde_json::Value> = report
         .layers
         .iter()
         .flat_map(|layer| {
@@ -151,12 +176,21 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
             })
         })
         .collect();
+    action_items.sort_by_key(|v| v["priority"].as_u64().unwrap_or(99));
 
-    // Per-layer summary for quick parsing
+    // Per-layer summary with full findings for agent consumption
     let layers: Vec<serde_json::Value> = report
         .layers
         .iter()
         .map(|l| {
+            let findings: Vec<serde_json::Value> = l.findings.iter().map(|f| serde_json::json!({
+                "severity":     f.severity,
+                "code":         f.code,
+                "message":      f.message,
+                "location":     f.location,
+                "reproduce_cmd": f.reproduce_cmd,
+                "suggestion":   f.suggestion,
+            })).collect();
             serde_json::json!({
                 "name":     l.name,
                 "runner":   l.runner,
@@ -166,7 +200,7 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
                 "failed":    l.metrics.failed,
                 "mutation_score": l.metrics.mutation_score,
                 "duration_ms": l.duration_ms,
-                "findings_count": l.findings.len(),
+                "findings": findings,
             })
         })
         .collect();
