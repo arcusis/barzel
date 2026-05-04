@@ -20,6 +20,7 @@ fn hash_rust(root: &Path, hasher: &mut DefaultHasher) {
     hash_file_content(&root.join("Cargo.toml"), hasher);
     hash_file_content(&root.join("Cargo.lock"), hasher);
     hash_dir_if_exists(&root.join("src"), hasher);
+    hash_dir_if_exists(&root.join("tests"), hasher);
 }
 
 fn hash_typescript(root: &Path, hasher: &mut DefaultHasher) {
@@ -27,7 +28,7 @@ fn hash_typescript(root: &Path, hasher: &mut DefaultHasher) {
     hash_file_content(&root.join("package-lock.json"), hasher);
     hash_file_content(&root.join("pnpm-lock.yaml"), hasher);
     hash_file_content(&root.join("yarn.lock"), hasher);
-    for dir in &["src", "app", "pages", "components"] {
+    for dir in &["src", "app", "pages", "components", "tests", "__tests__"] {
         hash_dir_if_exists(&root.join(dir), hasher);
     }
 }
@@ -53,6 +54,30 @@ fn hash_python(root: &Path, hasher: &mut DefaultHasher) {
     }
     hash_dir_if_exists(&root.join("src"), hasher);
     hash_dir_if_exists(&root.join("tests"), hasher);
+    // Hash top-level Python package directories (dirs containing __init__.py).
+    // Excludes common non-package dirs to keep hashing focused on source.
+    hash_python_packages(root, hasher);
+}
+
+fn hash_python_packages(root: &Path, hasher: &mut DefaultHasher) {
+    let Ok(mut entries) = std::fs::read_dir(root) else { return; };
+    let mut dirs: Vec<_> = entries
+        .by_ref()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            !matches!(name, "src" | "tests" | "dist" | "build" | ".venv" | "venv"
+                | "__pycache__" | ".git" | ".mypy_cache" | ".pytest_cache" | ".tox")
+                && !name.starts_with('.')
+        })
+        .filter(|p| p.join("__init__.py").exists())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        hash_dir_if_exists(&dir, hasher);
+    }
 }
 
 fn hash_go(root: &Path, hasher: &mut DefaultHasher) {
@@ -287,6 +312,107 @@ mod tests {
         let h_rust = compute_project_hash(dir.path(), Language::Rust);
         let h_ts = compute_project_hash(dir.path(), Language::TypeScript);
         assert_ne!(h_rust, h_ts);
+    }
+
+    // ── test/source directory invalidation ───────────────────────────────────
+
+    #[test]
+    fn rust_tests_dir_change_invalidates_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), b"[package]").unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::Rust);
+
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(tests_dir.join("integration_test.rs"), b"#[test] fn it_works() {}").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::Rust);
+
+        assert_ne!(h1, h2, "adding a file under tests/ must change the Rust hash");
+    }
+
+    #[test]
+    fn typescript_tests_dir_change_invalidates_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"name":"x"}"#).unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::TypeScript);
+
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(tests_dir.join("app.test.ts"), b"test('ok', () => {})").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::TypeScript);
+
+        assert_ne!(h1, h2, "adding a file under tests/ must change the TypeScript hash");
+    }
+
+    #[test]
+    fn typescript_double_underscore_tests_dir_change_invalidates_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"name":"x"}"#).unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::TypeScript);
+
+        let tests_dir = dir.path().join("__tests__");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(tests_dir.join("app.test.ts"), b"test('ok', () => {})").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::TypeScript);
+
+        assert_ne!(h1, h2, "adding a file under __tests__/ must change the TypeScript hash");
+    }
+
+    #[test]
+    fn python_top_level_package_dir_change_invalidates_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), b"[project]\nname='x'").unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::Python);
+
+        // Create a top-level Python package dir (has __init__.py)
+        let pkg = dir.path().join("mypackage");
+        std::fs::create_dir(&pkg).unwrap();
+        std::fs::write(pkg.join("__init__.py"), b"").unwrap();
+        std::fs::write(pkg.join("core.py"), b"def run(): pass").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::Python);
+        assert_ne!(h1, h2, "creating a top-level package dir must change the Python hash");
+
+        // Changing a file in that package must also invalidate
+        std::fs::write(pkg.join("core.py"), b"def run(): return 42").unwrap();
+        let h3 = compute_project_hash(dir.path(), Language::Python);
+        assert_ne!(h2, h3, "modifying a file in a top-level package dir must change the Python hash");
+    }
+
+    #[test]
+    fn go_nested_file_change_invalidates_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), b"module example.com/m\n").unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::Go);
+
+        let sub = dir.path().join("internal").join("util");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("helper.go"), b"package util").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::Go);
+        assert_ne!(h1, h2, "adding a nested .go file must change the Go hash");
+
+        std::fs::write(sub.join("helper.go"), b"package util\nfunc F() {}").unwrap();
+        let h3 = compute_project_hash(dir.path(), Language::Go);
+        assert_ne!(h2, h3, "modifying a nested .go file must change the Go hash");
+    }
+
+    #[test]
+    fn workspace_member_hash_is_isolated_from_sibling() {
+        let member_a = tempdir().unwrap();
+        let member_b = tempdir().unwrap();
+
+        std::fs::write(member_a.path().join("Cargo.toml"), b"[package]\nname='a'").unwrap();
+        std::fs::write(member_b.path().join("Cargo.toml"), b"[package]\nname='b'").unwrap();
+
+        let ha1 = compute_project_hash(member_a.path(), Language::Rust);
+        let hb1 = compute_project_hash(member_b.path(), Language::Rust);
+
+        // Modify member_b; member_a's hash must not change
+        std::fs::write(member_b.path().join("Cargo.toml"), b"[package]\nname='b-changed'").unwrap();
+        let ha2 = compute_project_hash(member_a.path(), Language::Rust);
+        let hb2 = compute_project_hash(member_b.path(), Language::Rust);
+
+        assert_eq!(ha1, ha2, "member_a hash must not change when member_b changes");
+        assert_ne!(hb1, hb2, "member_b hash must change after its own file changes");
     }
 
     // ── save / load round-trip ────────────────────────────────────────────────
