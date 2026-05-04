@@ -26,9 +26,15 @@ pub struct HistoryConfig {
     /// Values outside 0.0..=1.0 are clamped to the nearest valid bound.
     #[serde(default)]
     pub mutation_regression_tolerance: f64,
+    /// Maximum history entries to keep per (package_path, language) group after each save.
+    /// Oldest entries are pruned first. 0 means keep all entries (no pruning).
+    /// Default: 50.
+    #[serde(default = "default_max_entries")]
+    pub max_entries_per_package: usize,
 }
 
 fn default_true() -> bool { true }
+fn default_max_entries() -> usize { 50 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
@@ -36,6 +42,7 @@ impl Default for HistoryConfig {
             enabled: true,
             coverage_regression_tolerance: 0.0,
             mutation_regression_tolerance: 0.0,
+            max_entries_per_package: 50,
         }
     }
 }
@@ -55,6 +62,7 @@ impl HistoryConfig {
             enabled: self.enabled,
             coverage_regression_tolerance: clamp_tolerance(self.coverage_regression_tolerance),
             mutation_regression_tolerance: clamp_tolerance(self.mutation_regression_tolerance),
+            max_entries_per_package: self.max_entries_per_package,
         }
     }
 }
@@ -724,6 +732,7 @@ mutation_regression_tolerance = 0.05
             enabled: true,
             coverage_regression_tolerance: -0.05,
             mutation_regression_tolerance: -1.0,
+            ..HistoryConfig::default()
         };
         let n = cfg.normalized();
         assert_eq!(n.coverage_regression_tolerance, 0.0,
@@ -738,6 +747,7 @@ mutation_regression_tolerance = 0.05
             enabled: true,
             coverage_regression_tolerance: 1.5,
             mutation_regression_tolerance: 99.0,
+            ..HistoryConfig::default()
         };
         let n = cfg.normalized();
         assert_eq!(n.coverage_regression_tolerance, 1.0,
@@ -751,6 +761,7 @@ mutation_regression_tolerance = 0.05
             enabled: true,
             coverage_regression_tolerance: 0.02,
             mutation_regression_tolerance: 0.05,
+            ..HistoryConfig::default()
         };
         let n = cfg.normalized();
         assert!((n.coverage_regression_tolerance - 0.02).abs() < 1e-9);
@@ -770,6 +781,67 @@ mutation_regression_tolerance = 0.05
     fn enabled_flag_preserved_through_normalization() {
         let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
         assert!(!cfg.normalized().enabled);
+    }
+
+    #[test]
+    fn history_max_entries_defaults_to_50() {
+        let cfg = BarzelConfig::default();
+        assert_eq!(cfg.history.max_entries_per_package, 50);
+    }
+
+    #[test]
+    fn old_barzel_toml_without_max_entries_loads_with_default_50() {
+        let dir = tempdir().unwrap();
+        // A .barzel.toml with [history] but no max_entries_per_package field
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+
+[history]
+enabled = true
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(cfg.history.max_entries_per_package, 50,
+            "missing max_entries_per_package must default to 50");
+    }
+
+    #[test]
+    fn max_entries_zero_parses_and_preserved_through_normalization() {
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: 0.0,
+            mutation_regression_tolerance: 0.0,
+            max_entries_per_package: 0,
+        };
+        assert_eq!(cfg.normalized().max_entries_per_package, 0,
+            "max_entries=0 (no pruning) must survive normalization unchanged");
+    }
+
+    #[test]
+    fn max_entries_preserved_through_normalization() {
+        let cfg = HistoryConfig { max_entries_per_package: 10, ..HistoryConfig::default() };
+        assert_eq!(cfg.normalized().max_entries_per_package, 10);
     }
 
     #[test]
@@ -818,6 +890,7 @@ mutation_regression_tolerance = 2.0
             enabled: true,
             coverage_regression_tolerance: f64::NAN,
             mutation_regression_tolerance: f64::INFINITY,
+            ..HistoryConfig::default()
         };
         let n = cfg.normalized();
         assert_eq!(n.coverage_regression_tolerance, 0.0, "NaN tolerance must become 0.0");

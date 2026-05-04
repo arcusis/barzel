@@ -94,7 +94,7 @@ pub fn run_verification(
                     }
                     let mut report = skip_report(&project, since, ctx);
                     report.fail_on = cfg.reporting.fail_on.clone();
-                    emit_report(&report, stdio, json_out, target_path)?;
+                    emit_report(&report, stdio, json_out, target_path, &cfg.history)?;
                     return Ok(report);
                 }
             }
@@ -111,7 +111,7 @@ pub fn run_verification(
             // Annotate before emit so regression findings appear in action_items.
             // Must run before emit_report, which calls save_from_report (history write).
             crate::history::annotate_metric_regressions(&mut report, target_path, &cfg.history);
-            emit_report(&report, stdio, json_out, target_path)?;
+            emit_report(&report, stdio, json_out, target_path, &cfg.history)?;
             Ok(report)
         }
 
@@ -187,7 +187,7 @@ pub fn run_verification(
                         println!();
                     }
                     aggregate.add_layer(workspace_skip_layer(since, ctx));
-                    emit_report(&aggregate, stdio, json_out, target_path)?;
+                    emit_report(&aggregate, stdio, json_out, target_path, &cfg.history)?;
                     return Ok(aggregate);
                 }
             }
@@ -222,7 +222,7 @@ pub fn run_verification(
             }
 
             crate::history::annotate_metric_regressions(&mut aggregate, target_path, &cfg.history);
-            emit_report(&aggregate, stdio, json_out, target_path)?;
+            emit_report(&aggregate, stdio, json_out, target_path, &cfg.history)?;
             Ok(aggregate)
         }
     }
@@ -438,7 +438,7 @@ fn reproduce_cmd_for_runner(runner: &str) -> String {
     }
 }
 
-fn emit_report(report: &BarzelReport, stdio: bool, json_out: bool, target_path: &Path) -> Result<()> {
+fn emit_report(report: &BarzelReport, stdio: bool, json_out: bool, target_path: &Path, history_cfg: &crate::config::HistoryConfig) -> Result<()> {
     if json_out {
         println!("{}", serde_json::to_string(report).unwrap_or_default());
         report.save(target_path)?;
@@ -465,7 +465,7 @@ fn emit_report(report: &BarzelReport, stdio: bool, json_out: bool, target_path: 
 
     // Best-effort: persist metric snapshots for future trend/regression detection.
     // A write failure is warned on stderr but never propagates — run result is unaffected.
-    if let Err(e) = crate::history::save_from_report(report, target_path) {
+    if let Err(e) = crate::history::save_from_report(report, target_path, history_cfg) {
         if !stdio {
             eprintln!("{} history write failed: {}", "barzel:".yellow(), e);
         }
