@@ -1123,6 +1123,22 @@ enabled = false
     }
 
     #[test]
+    fn mutation_threshold_infinity_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = f64::INFINITY;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.structural.mutation_threshold"), "error must name key: {err}");
+    }
+
+    #[test]
+    fn min_coverage_infinity_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(f64::INFINITY);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.logic.min_coverage"), "error must name key: {err}");
+    }
+
+    #[test]
     fn run_verification_rejects_invalid_config_before_running() {
         let dir = tempdir().unwrap();
         // Write a parseable but semantically invalid .barzel.toml
