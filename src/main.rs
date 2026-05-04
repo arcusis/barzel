@@ -155,9 +155,13 @@ fn handle_stdio() -> ExitCode {
             match detect::detect_project(path.unwrap_or_else(|| std::path::Path::new("."))) {
                 Ok(project) => {
                     use crate::process::OsProcessRunner;
-                    let statuses = tool_registry::probe_all(&OsProcessRunner);
+                    let cfg = config::BarzelConfig::load_for_project(
+                        path.unwrap_or_else(|| std::path::Path::new("."))
+                    );
+                    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
                     let tool_json = tool_registry::tool_statuses_to_json(&statuses);
 
+                    let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
                     let resp = create_response("success", request_id, Some(serde_json::json!({
                         "language": project.language.to_string(),
                         "frameworks": {
@@ -165,6 +169,7 @@ fn handle_stdio() -> ExitCode {
                             "has_ai_deps": project.frameworks.has_ai_deps,
                             "ai_frameworks": project.frameworks.ai_frameworks,
                         },
+                        "missing_required_tools": missing_required,
                         "tools": tool_json,
                     })), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
@@ -528,6 +533,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
     let project = detect_project(target)?;
+    let cfg = config::BarzelConfig::load_for_project(target);
 
     println!(
         "{} Barzel tool check — {} project",
@@ -536,32 +542,54 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     );
     println!();
 
-    let statuses = tool_registry::probe_all(&OsProcessRunner);
-    let mut missing_count = 0usize;
+    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
 
-    for s in &statuses {
-        let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
-        println!(
-            "  {} {:<20} [{:<12}]{}",
-            icon,
-            s.name,
-            s.layer,
-            if s.available { String::new() } else { format!("  install: {}", s.install.dimmed()) }
-        );
-        if !s.available {
-            missing_count += 1;
+    // Partition into three groups
+    let required: Vec<_> = statuses.iter().filter(|s| s.required).collect();
+    let applicable_disabled: Vec<_> = statuses.iter().filter(|s| s.applicable && !s.required).collect();
+    let not_applicable: Vec<_> = statuses.iter().filter(|s| !s.applicable).collect();
+
+    // Section 1: required tools (applicable + layer enabled)
+    if !required.is_empty() {
+        println!("  {} Required for this project:", "→".bright_blue());
+        let missing_required = required.iter().filter(|s| !s.available).count();
+        for s in &required {
+            let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
+            println!(
+                "    {} {:<20} [{:<12}]{}",
+                icon, s.name, s.layer,
+                if s.available { String::new() } else { format!("  install: {}", s.install.dimmed()) }
+            );
+        }
+        println!();
+        if missing_required == 0 {
+            println!("  {} All required tools available — run `barzel run` to start verification.", "✓".bright_green());
+        } else {
+            println!(
+                "  {} {} required tool(s) missing. Install them to enable the corresponding layers.",
+                "!".yellow(), missing_required
+            );
         }
     }
 
-    println!();
-    if missing_count == 0 {
-        println!("{} All tools available — run `barzel run` to start verification.", "✓".bright_green());
-    } else {
-        println!(
-            "{} {} tool(s) missing. Install them to enable the corresponding layers.",
-            "!".yellow(),
-            missing_count
-        );
+    // Section 2: applicable but layer disabled — informational only
+    if !applicable_disabled.is_empty() {
+        println!();
+        println!("  {} Applicable but layer disabled in config:", "→".dimmed());
+        for s in &applicable_disabled {
+            let mark = if s.available { "✓" } else { "–" };
+            println!("    {} {:<20} [{:<12}]  (layer disabled)", mark.dimmed(), s.name.dimmed(), s.layer.dimmed());
+        }
+    }
+
+    // Section 3: not applicable — optional ecosystem tools dimmed
+    if !not_applicable.is_empty() {
+        println!();
+        println!("  {} Other ecosystem tools (not applicable to this project):", "→".dimmed());
+        for s in &not_applicable {
+            let mark = if s.available { "✓" } else { "–" };
+            println!("    {} {:<20} [{:<12}]", mark.dimmed(), s.name.dimmed(), s.layer.dimmed());
+        }
     }
 
     // Show detected frameworks
@@ -874,8 +902,8 @@ mod tests {
         // Verify the shared helper produces all four required fields.
         use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
         let statuses = vec![
-            ToolStatus { name: "cargo", layer: "core", available: true,  install: "https://rustup.rs" },
-            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep" },
+            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project" },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects" },
         ];
         let json = tool_statuses_to_json(&statuses);
         assert_eq!(json.len(), 2);
@@ -883,9 +911,10 @@ mod tests {
         assert_eq!(json[0]["layer"].as_str(), Some("core"));
         assert_eq!(json[0]["available"].as_bool(), Some(true));
         assert_eq!(json[0]["install"].as_str(), Some("https://rustup.rs"));
+        assert_eq!(json[0]["applicable"].as_bool(), Some(true));
+        assert_eq!(json[0]["required"].as_bool(), Some(true));
+        assert!(json[0].get("reason").is_some(), "reason field must be present");
         assert_eq!(json[1]["available"].as_bool(), Some(false));
-        // stdio and human paths both call tool_statuses_to_json — drift is structurally
-        // impossible as long as both go through this helper.
     }
 
     #[test]
