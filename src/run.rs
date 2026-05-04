@@ -253,8 +253,8 @@ fn skip_report(project: &ProjectInfo, since: Option<&str>, ctx: &DiffContext) ->
     report
 }
 
-/// Filter workspace members to only those whose root contains changed files.
-/// Returns all members when `ctx.forces_full_run()` is true.
+/// Filter workspace members whose roots contain changed files.
+/// Full-run bypass is handled by the caller before this helper is called.
 fn select_active_members<'a>(
     members: &'a [(String, ProjectInfo)],
     ctx: &DiffContext,
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn select_active_members_returns_all_on_forces_full_run() {
+    fn full_run_bypass_remains_caller_responsibility() {
         let repo = tempfile::tempdir().unwrap();
         git_init(repo.path());
         let pkg_a = repo.path().join("crates/a");
