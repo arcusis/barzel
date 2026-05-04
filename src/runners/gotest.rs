@@ -338,14 +338,6 @@ mod tests {
 
     #[test]
     fn no_go_tests_finding_has_reproduce_cmd() {
-        // Simulate go test output containing "no test files" so the NO_GO_TESTS path fires.
-        let mock = MockProcessRunner::passing("");
-        // MockProcessRunner::passing returns success=true with empty stdout.
-        // We need stderr to contain "no test files" — use a custom mock via spawn_error isn't right.
-        // Instead, build the finding directly and verify the reproduce_cmd is set.
-        let r = runner_with(mock);
-        // Invoke run with stderr that triggers the no-test-files branch.
-        // ProcessOutput.success=true, stdout="", stderr="[no test files]"
         use crate::process::ProcessOutput;
         struct StderrMock;
         impl crate::process::SubprocessRunner for StderrMock {
@@ -353,14 +345,13 @@ mod tests {
                 Ok(ProcessOutput { success: true, stdout: String::new(), stderr: "[no test files]".to_string() })
             }
         }
-        let r2 = GoTestRunner { proc: Arc::new(StderrMock) };
-        let result = r2.run(&go_info()).unwrap();
-        let no_test_finding = result.findings.iter().find(|f| f.code == "NO_GO_TESTS");
-        assert!(no_test_finding.is_some(), "NO_GO_TESTS finding must be emitted");
-        let rc = no_test_finding.unwrap().reproduce_cmd.as_deref().unwrap_or("");
+        let r = GoTestRunner { proc: Arc::new(StderrMock) };
+        let result = r.run(&go_info()).unwrap();
+        let finding = result.findings.iter().find(|f| f.code == "NO_GO_TESTS")
+            .expect("NO_GO_TESTS finding must be emitted");
+        let rc = finding.reproduce_cmd.as_deref().unwrap_or("");
         assert!(!rc.trim().is_empty(), "NO_GO_TESTS finding must have non-empty reproduce_cmd");
         assert!(rc.contains("go test"), "reproduce_cmd must reference `go test`: {rc}");
-        drop(r); // suppress unused warning
     }
 
     proptest! {

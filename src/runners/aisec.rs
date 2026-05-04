@@ -389,6 +389,8 @@ mod tests {
         let passed = result.findings.iter().find(|f| f.code == "AI_SEC_PASSED").unwrap();
         let rc = passed.reproduce_cmd.as_deref().unwrap_or("");
         assert!(!rc.trim().is_empty(), "AI_SEC_PASSED finding must have non-empty reproduce_cmd");
+        assert!(rc.contains("barzel run"), "reproduce_cmd must reference barzel run: {rc}");
+        assert!(rc.contains("--layer hostile"), "reproduce_cmd must scope to hostile layer: {rc}");
     }
 
     #[test]
