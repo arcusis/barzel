@@ -190,16 +190,22 @@ fn tool_applicability(name: &str, language: Language, root: &Path) -> (bool, &'s
         "pip-audit"   => (language == Language::Python, "Python project"),
         "semgrep"     => (true, "all projects (cross-language SAST)"),
 
-        // Package-manager audit: lockfile detection picks exactly one manager.
-        // No lockfile: default to npm only so agents are not told to install all three.
-        "pnpm" => (has_pnpm_lock, if has_pnpm_lock { "pnpm-lock.yaml detected" } else { "not detected" }),
+        // Package-manager audit: lockfile detection, but language-gated so a Rust or
+        // Python project with a stray lockfile is never told to install npm/pnpm/yarn.
+        "pnpm" => (
+            language == Language::TypeScript && has_pnpm_lock,
+            if has_pnpm_lock { "pnpm-lock.yaml detected" } else { "not detected" },
+        ),
         "npm"  => (
-            has_npm_lock || (language == Language::TypeScript && no_ts_lockfile),
+            language == Language::TypeScript && (has_npm_lock || no_ts_lockfile),
             if has_npm_lock { "package-lock.json detected" }
             else if language == Language::TypeScript { "TypeScript project (default package manager)" }
             else { "not detected" },
         ),
-        "yarn" => (has_yarn_lock, if has_yarn_lock { "yarn.lock detected" } else { "not detected" }),
+        "yarn" => (
+            language == Language::TypeScript && has_yarn_lock,
+            if has_yarn_lock { "yarn.lock detected" } else { "not detected" },
+        ),
 
         _ => (false, "not applicable to detected project"),
     }
@@ -388,8 +394,8 @@ mod tests {
         statuses.iter().filter(|s| s.applicable).map(|s| s.name).collect()
     }
 
-    fn required_names(statuses: &[ToolStatus]) -> Vec<&str> {
-        statuses.iter().filter(|s| s.required).map(|s| s.name).collect()
+    fn missing_required_count(statuses: &[ToolStatus]) -> usize {
+        statuses.iter().filter(|s| s.required && !s.available).count()
     }
 
     #[test]
@@ -518,6 +524,36 @@ mod tests {
                 "semgrep must be applicable for {:?}", lang
             );
         }
+    }
+
+    #[test]
+    fn rust_project_with_package_lock_does_not_mark_npm_applicable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), b"{}").unwrap();
+        let p = rust_project(dir.path().to_str().unwrap());
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability(&mut statuses, &p, &default_config());
+        let names = applicable_names(&statuses);
+        assert!(!names.contains(&"npm"),  "npm must not be applicable for Rust even with package-lock.json");
+        assert!(!names.contains(&"pnpm"), "pnpm must not be applicable for Rust");
+        assert!(!names.contains(&"yarn"), "yarn must not be applicable for Rust");
+    }
+
+    #[test]
+    fn missing_required_count_only_counts_required_and_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = rust_project(dir.path().to_str().unwrap());
+        // available=false for all tools
+        let mut statuses = probe_all(&MockProcessRunner::unavailable());
+        apply_applicability(&mut statuses, &p, &default_config());
+
+        let count = missing_required_count(&statuses);
+        // Only required (applicable + layer enabled) AND unavailable tools should count
+        let expected = statuses.iter().filter(|s| s.required && !s.available).count();
+        assert_eq!(count, expected);
+        // Sanity: applicable-but-not-required tools do not inflate the count
+        let applicable_unavailable = statuses.iter().filter(|s| s.applicable && !s.available).count();
+        assert!(count <= applicable_unavailable, "count must not exceed applicable-unavailable");
     }
 
     #[test]
