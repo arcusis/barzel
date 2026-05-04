@@ -1111,9 +1111,10 @@ mod tests {
                     "action_item[{i}] missing required key '{key}'"
                 );
             }
+            let reproduce = item["reproduce_cmd"].as_str().unwrap_or("");
             assert!(
-                !item["reproduce_cmd"].is_null(),
-                "action_item[{i}] has null reproduce_cmd (code={:?})",
+                !reproduce.trim().is_empty(),
+                "action_item[{i}] has empty or null reproduce_cmd (code={:?})",
                 item["code"].as_str().unwrap_or("?")
             );
         }
