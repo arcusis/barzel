@@ -6,6 +6,36 @@ pub struct BarzelConfig {
     pub project: ProjectConfig,
     pub layers: LayersConfig,
     pub reporting: ReportingConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
+}
+
+/// Controls local history snapshots and metric-regression findings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    /// When false, history is still saved but regression findings are not injected.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Minimum absolute drop in coverage (0.0–1.0) before a finding is emitted.
+    /// Default 0.0 means any decrease triggers a finding.
+    /// Example: 0.02 means only report drops greater than 2 percentage points.
+    #[serde(default)]
+    pub coverage_regression_tolerance: f64,
+    /// Minimum absolute drop in mutation score (0.0–1.0) before a finding is emitted.
+    #[serde(default)]
+    pub mutation_regression_tolerance: f64,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            coverage_regression_tolerance: 0.0,
+            mutation_regression_tolerance: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +172,7 @@ impl Default for BarzelConfig {
                 format: "json".to_string(),
                 fail_on: "high".to_string(),
             },
+            history: HistoryConfig::default(),
         }
     }
 }
@@ -575,5 +606,124 @@ fail_on = "high"
         let cfg = BarzelConfig::load_for_project(dir.path());
         assert!(cfg.layers.operational.commands.is_empty(),
             ".barzel.toml without [[layers.operational.commands]] must load cleanly with empty commands");
+    }
+
+    // ── [history] config ──────────────────────────────────────────────────────
+
+    #[test]
+    fn history_defaults_to_enabled_with_zero_tolerance() {
+        let cfg = BarzelConfig::default();
+        assert!(cfg.history.enabled, "history.enabled must default to true");
+        assert_eq!(cfg.history.coverage_regression_tolerance, 0.0);
+        assert_eq!(cfg.history.mutation_regression_tolerance, 0.0);
+    }
+
+    #[test]
+    fn old_barzel_toml_without_history_section_loads_cleanly() {
+        let dir = tempdir().unwrap();
+        // A .barzel.toml with no [history] section at all
+        let toml = r#"
+[project]
+name = "legacy-app"
+language = "rust"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert!(cfg.history.enabled,
+            "missing [history] section must fall back to enabled=true default");
+        assert_eq!(cfg.history.coverage_regression_tolerance, 0.0);
+    }
+
+    #[test]
+    fn history_section_parses_tolerances() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+
+[history]
+enabled = true
+coverage_regression_tolerance = 0.02
+mutation_regression_tolerance = 0.05
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert!(cfg.history.enabled);
+        assert!((cfg.history.coverage_regression_tolerance - 0.02).abs() < 1e-9);
+        assert!((cfg.history.mutation_regression_tolerance - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn history_enabled_false_parses() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+
+[history]
+enabled = false
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert!(!cfg.history.enabled, "history.enabled = false must parse correctly");
     }
 }

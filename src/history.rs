@@ -4,7 +4,8 @@
 /// mutation-score measurement appends a compact entry to `.barzel/history/`.
 /// Full reports remain in `.barzel/reports/`; history entries are small and
 /// fast to scan for future regression warnings.
-use crate::report::{BarzelReport, LayerStatus, ReportStatus};
+use crate::config::HistoryConfig;
+use crate::report::{BarzelReport, Finding, LayerResult, LayerStatus, ReportStatus, Severity};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
@@ -127,10 +128,202 @@ pub fn save_from_report(report: &BarzelReport, project_root: &Path) -> std::io::
     Ok(())
 }
 
+/// Compare the current report against prior history and inject `COVERAGE_REGRESSION`
+/// or `MUTATION_SCORE_REGRESSION` findings for any drops that exceed the configured
+/// tolerances. Findings are injected directly into the matching `LayerResult`.
+///
+/// Must be called **before** `save_from_report` so the current run is not compared
+/// against itself.
+pub fn annotate_metric_regressions(
+    report: &mut BarzelReport,
+    project_root: &Path,
+    cfg: &HistoryConfig,
+) {
+    if !cfg.enabled { return; }
+
+    let history = load_history_entries(project_root);
+    if history.is_empty() { return; }
+
+    let mut any_injected = false;
+
+    if report.workspace_members.is_empty() {
+        // Single-project path
+        let project_name = report.project.package_name.clone()
+            .unwrap_or_else(|| report.project.language.to_string());
+        let language = report.project.language.to_string();
+
+        for layer in &mut report.layers {
+            let injected = regression_findings_for_layer(
+                layer, &history, &project_name, None, &language, cfg,
+            );
+            if !injected.is_empty() {
+                layer.findings.extend(injected);
+                if matches!(layer.status, LayerStatus::Pass) {
+                    layer.status = LayerStatus::Partial;
+                }
+                any_injected = true;
+            }
+        }
+    } else {
+        // Workspace path: inject into member layers, then update member summary/status,
+        // then rebuild aggregate layers so they are consistent before emit.
+        let project_name = report.project.package_name.clone()
+            .unwrap_or_else(|| "workspace".to_string());
+
+        for member in &mut report.workspace_members {
+            let package_path = member.package_path.clone();
+            let language = member.language.clone();
+            let mut member_injected = false;
+
+            for layer in &mut member.layers {
+                let injected = regression_findings_for_layer(
+                    layer, &history, &project_name,
+                    Some(&package_path), &language, cfg,
+                );
+                if !injected.is_empty() {
+                    layer.findings.extend(injected);
+                    if matches!(layer.status, LayerStatus::Pass) {
+                        layer.status = LayerStatus::Partial;
+                    }
+                    member_injected = true;
+                    any_injected = true;
+                }
+            }
+
+            // Recompute per-member summary and status after injection.
+            if member_injected {
+                let mut s = crate::report::Summary {
+                    total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass,
+                };
+                for layer in &member.layers {
+                    for f in &layer.findings {
+                        s.total_findings += 1;
+                        match f.severity {
+                            Severity::Critical => s.critical += 1,
+                            Severity::High     => s.high += 1,
+                            Severity::Medium   => s.medium += 1,
+                            Severity::Low      => s.low += 1,
+                            Severity::Info     => {}
+                        }
+                    }
+                }
+                member.status = if s.critical > 0 {
+                    ReportStatus::Fail
+                } else if s.high > 0 || s.medium > 0 {
+                    ReportStatus::Partial
+                } else {
+                    ReportStatus::Pass
+                };
+                s.overall_status = member.status;
+                member.summary = s;
+            }
+        }
+
+        // Rebuild aggregate layers from updated members and recompute aggregate summary.
+        if any_injected {
+            report.layers = report.workspace_members.iter()
+                .flat_map(|m| m.layers.clone())
+                .collect();
+        }
+    }
+
+    if any_injected {
+        report.recompute_summary();
+    }
+}
+
+/// Return all regression findings for `layer` (one per exceeded metric threshold).
+/// Returns an empty vec when no regressions are found.
+fn regression_findings_for_layer(
+    layer: &LayerResult,
+    history: &[HistoryEntry],
+    project: &str,
+    package_path: Option<&str>,
+    language: &str,
+    cfg: &HistoryConfig,
+) -> Vec<Finding> {
+    let ms = layer.metrics.mutation_score;
+    let cov = layer.metrics.coverage;
+    if ms.is_none() && cov.is_none() { return vec![]; }
+
+    // Collect matching prior layers (history is sorted ascending) and take the last
+    // (most recent). Collecting first avoids the DoubleEndedIterator lint on flat_map chains.
+    let prior_layers: Vec<_> = history.iter()
+        .filter(|e| {
+            e.project == project
+                && e.package_path.as_deref() == package_path
+                && e.language == language
+        })
+        .flat_map(|e| &e.layers)
+        .filter(|l| l.runner == layer.runner)
+        .collect();
+    let prior_layer = match prior_layers.last() {
+        Some(p) => p,
+        None => return vec![],
+    };
+
+    let mut findings = vec![];
+    let reproduce = best_reproduce_cmd(layer, "barzel run --json");
+
+    // Coverage regression
+    if let (Some(current), Some(prior)) = (cov, prior_layer.coverage) {
+        let drop = prior - current;
+        if drop > cfg.coverage_regression_tolerance {
+            findings.push(Finding {
+                severity: Severity::Medium,
+                code: "COVERAGE_REGRESSION".to_string(),
+                message: format!(
+                    "Coverage dropped from {:.1}% to {:.1}% (−{:.1} pp, runner: {})",
+                    prior * 100.0, current * 100.0, drop * 100.0, layer.runner
+                ),
+                location: None,
+                reproduce_cmd: Some(reproduce.clone()),
+                suggestion: Some(
+                    "Inspect recently changed code for untested branches and rerun the test suite \
+                     with coverage reporting enabled."
+                    .to_string(),
+                ),
+            });
+        }
+    }
+
+    // Mutation score regression
+    if let (Some(current), Some(prior)) = (ms, prior_layer.mutation_score) {
+        let drop = prior - current;
+        if drop > cfg.mutation_regression_tolerance {
+            findings.push(Finding {
+                severity: Severity::Medium,
+                code: "MUTATION_SCORE_REGRESSION".to_string(),
+                message: format!(
+                    "Mutation score dropped from {:.1}% to {:.1}% (−{:.1} pp, runner: {})",
+                    prior * 100.0, current * 100.0, drop * 100.0, layer.runner
+                ),
+                location: None,
+                reproduce_cmd: Some(reproduce),
+                suggestion: Some(
+                    "Inspect recently changed code for surviving mutants and add targeted tests. \
+                     Rerun the mutation runner to confirm improvement."
+                    .to_string(),
+                ),
+            });
+        }
+    }
+
+    findings
+}
+
+/// Return the reproduce_cmd from the first non-regression finding in the layer,
+/// falling back to `fallback` if none exists.
+fn best_reproduce_cmd(layer: &LayerResult, fallback: &str) -> String {
+    layer.findings.iter()
+        .filter(|f| !matches!(f.code.as_str(), "COVERAGE_REGRESSION" | "MUTATION_SCORE_REGRESSION"))
+        .find_map(|f| f.reproduce_cmd.clone())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 /// Load all valid history entries under `{project_root}/.barzel/history/`,
 /// sorted by timestamp ascending. Invalid JSON files are silently skipped.
-// Used by the follow-up trend/regression detection PR; suppression is intentional.
-#[allow(dead_code)]
 pub fn load_history_entries(project_root: &Path) -> Vec<HistoryEntry> {
     let history_dir = project_root.join(".barzel").join("history");
     if !history_dir.exists() {
@@ -577,5 +770,431 @@ mod tests {
         let entries = entries_from_report(&report);
         let result = save_entry(&entries[0], dir.path());
         assert!(result.is_err(), "save_entry must return Err when history dir cannot be created");
+    }
+
+    // ── annotate_metric_regressions ───────────────────────────────────────────
+
+    fn default_history_cfg() -> HistoryConfig {
+        HistoryConfig::default()
+    }
+
+    /// Write a prior entry to `dir`'s history directory and return a current
+    /// BarzelReport whose layer metric differs from the prior by `delta` (negative = drop).
+    fn setup_single_regression(
+        dir: &tempfile::TempDir,
+        runner: &str,
+        prior_coverage: Option<f64>,
+        prior_mutation: Option<f64>,
+        current_coverage: Option<f64>,
+        current_mutation: Option<f64>,
+    ) -> BarzelReport {
+        let prior = HistoryEntry {
+            report_id: "prior001-0000-0000-0000-000000000000".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(1),
+            project: "myapp".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: runner.to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: prior_mutation,
+                coverage: prior_coverage,
+            }],
+        };
+        save_entry(&prior, dir.path()).unwrap();
+
+        let reproduce = format!("{} --coverage 2>&1", runner);
+        let mut report = BarzelReport::new(project(Language::Python));
+        report.add_layer(LayerResult {
+            name: "logic".to_string(),
+            runner: runner.to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![Finding {
+                severity: Severity::Info,
+                code: "PASS".to_string(),
+                message: "ok".to_string(),
+                location: None,
+                reproduce_cmd: Some(reproduce),
+                suggestion: None,
+            }],
+            metrics: LayerMetrics {
+                coverage: current_coverage,
+                mutation_score: current_mutation,
+                ..Default::default()
+            },
+            duration_ms: 0,
+        });
+        report
+    }
+
+    #[test]
+    fn no_prior_history_produces_no_regression_findings() {
+        let dir = tempdir().unwrap();
+        let mut report = single_report_with_coverage();
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+        let codes: Vec<_> = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .map(|f| f.code.as_str())
+            .collect();
+        assert!(!codes.contains(&"COVERAGE_REGRESSION"));
+        assert!(!codes.contains(&"MUTATION_SCORE_REGRESSION"));
+    }
+
+    #[test]
+    fn coverage_drop_injects_finding_with_reproduce_cmd() {
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,  // prior
+            Some(0.80), None,  // current — 10 pp drop
+        );
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        let finding = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .find(|f| f.code == "COVERAGE_REGRESSION")
+            .expect("COVERAGE_REGRESSION finding must be injected");
+        assert_eq!(finding.severity, Severity::Medium);
+        assert!(finding.message.contains("90.0%"), "message must show prior value");
+        assert!(finding.message.contains("80.0%"), "message must show current value");
+        assert!(finding.reproduce_cmd.as_deref().unwrap_or("").contains("pytest"),
+            "reproduce_cmd must come from the layer's existing finding");
+    }
+
+    #[test]
+    fn mutation_score_drop_injects_finding_with_reproduce_cmd() {
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "cargo mutants",
+            None, Some(0.85),  // prior
+            None, Some(0.70),  // current — 15 pp drop
+        );
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        let finding = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .find(|f| f.code == "MUTATION_SCORE_REGRESSION")
+            .expect("MUTATION_SCORE_REGRESSION finding must be injected");
+        assert_eq!(finding.severity, Severity::Medium);
+        assert!(finding.message.contains("85.0%"));
+        assert!(finding.message.contains("70.0%"));
+        assert!(!finding.reproduce_cmd.as_deref().unwrap_or("").is_empty(),
+            "reproduce_cmd must not be empty");
+    }
+
+    #[test]
+    fn equal_or_improved_metrics_produce_no_finding() {
+        let dir = tempdir().unwrap();
+        // Prior 0.80, current 0.85 — improvement, no finding
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.80), None,
+            Some(0.85), None,
+        );
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"));
+    }
+
+    #[test]
+    fn tolerance_suppresses_small_drops() {
+        let dir = tempdir().unwrap();
+        // 1 pp drop, but tolerance is 2 pp — no finding
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.89), None,
+        );
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: 0.02,
+            mutation_regression_tolerance: 0.0,
+        };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"));
+    }
+
+    #[test]
+    fn disabled_history_suppresses_regression_findings() {
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.80), None,
+        );
+        let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "regression findings must be suppressed when history.enabled = false");
+    }
+
+    #[test]
+    fn latest_prior_entry_wins_when_multiple_exist() {
+        let dir = tempdir().unwrap();
+        let runner = "pytest";
+
+        // older entry: coverage was 0.90
+        let old_entry = HistoryEntry {
+            report_id: "old00001".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(5),
+            project: "myapp".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: runner.to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: None,
+                coverage: Some(0.90),
+            }],
+        };
+        // newest entry: coverage was 0.75 — current (0.80) is better, no regression vs latest
+        let new_entry = HistoryEntry {
+            report_id: "new00001".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::minutes(10),
+            project: "myapp".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Partial,
+            layers: vec![HistoryLayerMetric {
+                runner: runner.to_string(),
+                status: LayerStatus::Partial,
+                mutation_score: None,
+                coverage: Some(0.75),
+            }],
+        };
+        save_entry(&old_entry, dir.path()).unwrap();
+        save_entry(&new_entry, dir.path()).unwrap();
+
+        let mut report = setup_single_regression(
+            &dir, runner,
+            None, None,         // prior ignored — we wrote manually above
+            Some(0.80), None,   // current 80% — above the latest prior of 75%
+        );
+        // Clear the auto-written prior (setup_single_regression writes its own)
+        // by recreating the history dir with only our two entries.
+        let history_dir = dir.path().join(".barzel").join("history");
+        for f in std::fs::read_dir(&history_dir).unwrap().flatten() {
+            std::fs::remove_file(f.path()).unwrap();
+        }
+        save_entry(&old_entry, dir.path()).unwrap();
+        save_entry(&new_entry, dir.path()).unwrap();
+
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "latest prior is 75%, current is 80% — no regression vs latest prior");
+    }
+
+    #[test]
+    fn workspace_compares_only_matching_package_and_runner() {
+        let dir = tempdir().unwrap();
+
+        // Prior for crates/api
+        let api_prior = HistoryEntry {
+            report_id: "apiprior-0000-0000-0000-000000000000".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(1),
+            project: "my-workspace".to_string(),
+            package_path: Some("crates/api".to_string()),
+            language: "rust".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "cargo mutants".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: Some(0.85),
+                coverage: None,
+            }],
+        };
+        save_entry(&api_prior, dir.path()).unwrap();
+
+        // Build workspace report: api dropped, web unchanged (no prior)
+        let ws_project = ProjectInfo {
+            language: Language::Unknown,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some("my-workspace".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut report = BarzelReport::new(ws_project);
+        report.workspace_members = vec![
+            WorkspaceMemberReport {
+                package_path: "crates/api".to_string(),
+                language: "rust".to_string(),
+                status: ReportStatus::Pass,
+                layers: vec![LayerResult {
+                    name: "structural".to_string(),
+                    runner: "cargo mutants".to_string(),
+                    status: LayerStatus::Pass,
+                    findings: vec![Finding {
+                        severity: Severity::Info,
+                        code: "PASS".to_string(),
+                        message: "ok".to_string(),
+                        location: None,
+                        reproduce_cmd: Some("cargo mutants 2>&1".to_string()),
+                        suggestion: None,
+                    }],
+                    metrics: LayerMetrics { mutation_score: Some(0.70), ..Default::default() },
+                    duration_ms: 0,
+                }],
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
+            },
+            WorkspaceMemberReport {
+                package_path: "apps/web".to_string(),
+                language: "typescript".to_string(),
+                status: ReportStatus::Pass,
+                layers: vec![LayerResult {
+                    name: "structural".to_string(),
+                    runner: "stryker".to_string(),
+                    status: LayerStatus::Pass,
+                    findings: vec![],
+                    metrics: LayerMetrics { mutation_score: Some(0.80), ..Default::default() },
+                    duration_ms: 0,
+                }],
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
+            },
+        ];
+
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        // api must have a regression finding (0.85 → 0.70)
+        let api = report.workspace_members.iter()
+            .find(|m| m.package_path == "crates/api").unwrap();
+        assert!(api.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
+            "crates/api dropped 15 pp — must have MUTATION_SCORE_REGRESSION");
+        assert!(matches!(api.status, ReportStatus::Partial),
+            "crates/api member.status must be Partial after regression injection");
+        assert_eq!(api.summary.medium, 1,
+            "crates/api member.summary.medium must be 1 after regression injection");
+
+        // web has no prior — must not have a regression finding
+        let web = report.workspace_members.iter()
+            .find(|m| m.package_path == "apps/web").unwrap();
+        assert!(!web.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
+            "apps/web has no prior history entry — must not have regression finding");
+        assert!(matches!(web.status, ReportStatus::Pass),
+            "apps/web member.status must remain Pass");
+
+        // Aggregate report summary must be recomputed
+        assert!(matches!(report.status, ReportStatus::Partial),
+            "aggregate report status must be Partial after workspace member regression");
+    }
+
+    #[test]
+    fn regression_finding_reproduce_cmd_falls_back_to_barzel_run() {
+        let dir = tempdir().unwrap();
+        // Layer with no existing reproduce_cmd on its findings
+        let prior = HistoryEntry {
+            report_id: "prior002".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(1),
+            project: "myapp".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "pytest".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: None,
+                coverage: Some(0.90),
+            }],
+        };
+        save_entry(&prior, dir.path()).unwrap();
+
+        let mut report = BarzelReport::new(project(Language::Python));
+        report.add_layer(LayerResult {
+            name: "logic".to_string(),
+            runner: "pytest".to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![],  // no existing findings → no reproduce_cmd to borrow
+            metrics: LayerMetrics { coverage: Some(0.80), ..Default::default() },
+            duration_ms: 0,
+        });
+
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        let finding = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .find(|f| f.code == "COVERAGE_REGRESSION")
+            .expect("COVERAGE_REGRESSION must be injected");
+        let rc = finding.reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!rc.trim().is_empty(), "reproduce_cmd must not be empty");
+        assert!(rc.contains("barzel"), "fallback reproduce_cmd must reference barzel run");
+    }
+
+    #[test]
+    fn both_coverage_and_mutation_regressions_emit_separate_findings() {
+        // A layer that tracks both metrics and drops on both must emit two findings.
+        let dir = tempdir().unwrap();
+        let prior = HistoryEntry {
+            report_id: "prior003".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(1),
+            project: "myapp".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "pytest".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: Some(0.85),
+                coverage: Some(0.90),
+            }],
+        };
+        save_entry(&prior, dir.path()).unwrap();
+
+        let mut report = BarzelReport::new(project(Language::Python));
+        report.add_layer(LayerResult {
+            name: "logic".to_string(),
+            runner: "pytest".to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![],
+            metrics: LayerMetrics {
+                mutation_score: Some(0.70),  // dropped 15 pp
+                coverage: Some(0.75),        // dropped 15 pp
+                ..Default::default()
+            },
+            duration_ms: 0,
+        });
+
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        let codes: Vec<_> = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .map(|f| f.code.as_str())
+            .collect();
+        assert!(codes.contains(&"COVERAGE_REGRESSION"),     "must emit COVERAGE_REGRESSION");
+        assert!(codes.contains(&"MUTATION_SCORE_REGRESSION"), "must emit MUTATION_SCORE_REGRESSION");
+    }
+
+    #[test]
+    fn regression_findings_appear_in_action_items_and_summary_is_coherent() {
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.70), None,
+        );
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        // summary must be recomputed
+        let medium_count = report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .filter(|f| matches!(f.severity, Severity::Medium))
+            .count();
+        assert!(medium_count >= 1);
+        assert_eq!(report.summary.medium, medium_count,
+            "summary.medium must match actual medium finding count after recompute");
+        assert!(matches!(report.status, ReportStatus::Partial),
+            "a previously passing report with a medium finding must become Partial");
     }
 }

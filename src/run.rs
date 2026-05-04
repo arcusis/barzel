@@ -108,6 +108,9 @@ pub fn run_verification(
             } else {
                 report.diff_fallback_reason = diff_fallback_reason.clone();
             }
+            // Annotate before emit so regression findings appear in action_items.
+            // Must run before emit_report, which calls save_from_report (history write).
+            crate::history::annotate_metric_regressions(&mut report, target_path, &cfg.history);
             emit_report(&report, stdio, json_out, target_path)?;
             Ok(report)
         }
@@ -218,6 +221,7 @@ pub fn run_verification(
                 }
             }
 
+            crate::history::annotate_metric_regressions(&mut aggregate, target_path, &cfg.history);
             emit_report(&aggregate, stdio, json_out, target_path)?;
             Ok(aggregate)
         }
