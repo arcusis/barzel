@@ -177,6 +177,10 @@ fn handle_stdio() -> ExitCode {
                         emit_error(request_id, e.to_string());
                         return ExitCode::from(1);
                     }
+                    if let Err(e) = validate_workspace_member_configs(&workspace) {
+                        emit_error(request_id, e.to_string());
+                        return ExitCode::from(1);
+                    }
                     let payload = build_check_payload(workspace, &cfg, &OsProcessRunner);
                     let resp = create_response("success", request_id, Some(payload), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
@@ -641,6 +645,27 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
 
 // ── Check command ─────────────────────────────────────────────────────────────
 
+/// Validate per-member `.barzel.toml` overrides in a workspace.
+/// Single projects and members without a local config are skipped.
+fn validate_workspace_member_configs(workspace: &detect::WorkspaceInfo) -> error::Result<()> {
+    use detect::WorkspaceInfo;
+    let members = match workspace {
+        WorkspaceInfo::Single(_) => return Ok(()),
+        WorkspaceInfo::Multi { members, .. } => members,
+    };
+    for (rel_path, member) in members {
+        let config_path = std::path::Path::new(&member.root).join(".barzel.toml");
+        if !config_path.exists() {
+            continue;
+        }
+        let mcfg = config::BarzelConfig::load_for_project(std::path::Path::new(&member.root));
+        mcfg.validate().map_err(|e| {
+            error::BarzelError::Config(format!("{}: {}", rel_path, e))
+        })?;
+    }
+    Ok(())
+}
+
 /// Build the JSON payload for a `check` command. Extracted for testability.
 fn build_check_payload(
     workspace: detect::WorkspaceInfo,
@@ -692,7 +717,10 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     let cfg = config::BarzelConfig::load_for_project(target);
     cfg.validate()?;
 
-    let (statuses, header, frameworks) = match detect_workspace(target)? {
+    let workspace = detect_workspace(target)?;
+    validate_workspace_member_configs(&workspace)?;
+
+    let (statuses, header, frameworks) = match workspace {
         WorkspaceInfo::Single(project) => {
             let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
             let header = format!("Barzel tool check — {} project", project.language.to_string().bright_green());
@@ -1215,6 +1243,73 @@ mod tests {
         // Single contract fields must be absent
         assert!(payload.get("language").is_none(), "Multi must not emit top-level language");
         assert!(payload.get("frameworks").is_none(), "Multi must not emit top-level frameworks");
+    }
+
+    // ── validate_workspace_member_configs ─────────────────────────────────────
+
+    #[test]
+    fn single_project_member_validation_is_ok() {
+        use crate::detect::WorkspaceInfo;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = WorkspaceInfo::Single(make_project(Language::Rust, dir.path().to_str().unwrap()));
+        validate_workspace_member_configs(&ws).expect("Single must always pass");
+    }
+
+    #[test]
+    fn workspace_member_without_local_config_is_ok() {
+        use crate::detect::{WorkspaceInfo, WorkspaceKind};
+        let dir = tempfile::tempdir().unwrap();
+        // No .barzel.toml written — member uses defaults
+        let ws = WorkspaceInfo::Multi {
+            kind: WorkspaceKind::Cargo,
+            members: vec![
+                ("crates/api".to_string(), make_project(Language::Rust, dir.path().to_str().unwrap())),
+            ],
+        };
+        validate_workspace_member_configs(&ws).expect("member without local config must pass");
+    }
+
+    #[test]
+    fn workspace_member_with_invalid_local_config_is_rejected() {
+        use crate::detect::{WorkspaceInfo, WorkspaceKind};
+        let dir = tempfile::tempdir().unwrap();
+        // Write a complete, parseable .barzel.toml with mutation_threshold out of range.
+        // Partial TOML falls back to defaults in load_for_project, so all sections are required.
+        let toml = r#"
+[project]
+name = "broken"
+language = "rust"
+
+[layers]
+enabled = ["logic"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = false
+mutation_threshold = 999.0
+
+[layers.hostile]
+fuzzing = false
+sast = false
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let ws = WorkspaceInfo::Multi {
+            kind: WorkspaceKind::Cargo,
+            members: vec![
+                ("crates/broken".to_string(), make_project(Language::Rust, dir.path().to_str().unwrap())),
+            ],
+        };
+        let err = validate_workspace_member_configs(&ws).unwrap_err().to_string();
+        assert!(err.contains("crates/broken"), "error must name the member path: {err}");
+        assert!(err.contains("layers.structural.mutation_threshold"), "error must name the bad key: {err}");
+        assert!(err.contains("0.0..=100.0"), "error must state the valid range: {err}");
     }
 
     // ── run-data invariant helpers ────────────────────────────────────────────
