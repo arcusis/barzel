@@ -34,14 +34,6 @@ pub struct HistoryEntry {
     pub layers: Vec<HistoryLayerMetric>,
 }
 
-impl HistoryEntry {
-    /// True when at least one layer carries a metric — the only entries worth persisting.
-    #[allow(dead_code)]
-    pub fn has_metrics(&self) -> bool {
-        self.layers.iter().any(|l| l.mutation_score.is_some() || l.coverage.is_some())
-    }
-}
-
 /// Build history entries from a completed report.
 ///
 /// For single projects: at most one entry.
@@ -109,11 +101,15 @@ pub fn save_entry(entry: &HistoryEntry, project_root: &Path) -> std::io::Result<
     let history_dir = project_root.join(".barzel").join("history");
     std::fs::create_dir_all(&history_dir)?;
 
-    let id_prefix = entry.report_id.get(..8).unwrap_or(&entry.report_id);
-    let suffix = entry.package_path.as_deref()
+    // Use the full report_id (sanitized) so two IDs sharing the same 8-char prefix
+    // never collide. Append a short stable hash of the raw suffix so workspace members
+    // that sanitize to the same string (e.g. "apps/web" vs "apps_web") remain distinct.
+    let raw_suffix = entry.package_path.as_deref()
         .unwrap_or(&entry.language);
-    let safe_suffix = sanitize(suffix);
-    let filename = format!("{}-{}.json", id_prefix, safe_suffix);
+    let safe_suffix = sanitize(raw_suffix);
+    let suffix_hash = hash8(raw_suffix);
+    let safe_id = sanitize(&entry.report_id);
+    let filename = format!("{}-{}-{}.json", safe_id, safe_suffix, suffix_hash);
 
     let content = serde_json::to_string_pretty(entry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -131,6 +127,7 @@ pub fn save_from_report(report: &BarzelReport, project_root: &Path) -> std::io::
 
 /// Load all valid history entries under `{project_root}/.barzel/history/`,
 /// sorted by timestamp ascending. Invalid JSON files are silently skipped.
+// Used by the follow-up trend/regression detection PR; suppression is intentional.
 #[allow(dead_code)]
 pub fn load_history_entries(project_root: &Path) -> Vec<HistoryEntry> {
     let history_dir = project_root.join(".barzel").join("history");
@@ -159,6 +156,18 @@ fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
         .collect()
+}
+
+/// Stable 8-hex-char hash of a string, used as a tiebreaker in filenames
+/// when two raw suffixes sanitize to the same safe string.
+fn hash8(s: &str) -> String {
+    // FNV-1a 64-bit — dependency-free, deterministic, good distribution for short strings.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:08x}", h & 0xffff_ffff)
 }
 
 #[cfg(test)]
@@ -486,6 +495,70 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert!(loaded[0].timestamp <= loaded[1].timestamp, "entries must be sorted ascending by timestamp");
         assert_eq!(loaded[0].report_id, "aaaa0001", "earlier entry must be first");
+    }
+
+    #[test]
+    fn same_id_prefix_different_full_ids_produce_separate_files() {
+        // Two report IDs sharing the same first 8 chars must not overwrite each other.
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+
+        let base = single_report_with_coverage();
+        let mut entries = entries_from_report(&base);
+        assert_eq!(entries.len(), 1);
+
+        // Clone the entry and give it a different report_id with the same 8-char prefix.
+        let mut second = entries[0].clone();
+        second.report_id = entries[0].report_id.replacen(
+            &entries[0].report_id[8..9],
+            "Z",
+            1,
+        );
+        // Ensure the first 8 chars still differ from the second entry's full id
+        // by making the second id completely different but with an identical prefix.
+        let original_id = entries[0].report_id.clone();
+        second.report_id = format!("{}ZZZZZZZZZZZZZZZZ", &original_id[..8]);
+
+        save_entry(&entries[0], dir.path()).unwrap();
+        save_entry(&second, dir.path()).unwrap();
+
+        let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
+        assert_eq!(files.len(), 2,
+            "two entries with IDs sharing the same 8-char prefix must produce two distinct files");
+    }
+
+    #[test]
+    fn workspace_members_sanitizing_to_same_suffix_produce_separate_files() {
+        // "apps/web" and "apps_web" both sanitize to "apps_web" — they must not collide.
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        let base_entry = HistoryEntry {
+            report_id: "rep12345-0000-0000-0000-000000000000".to_string(),
+            timestamp: chrono::Utc::now(),
+            project: "ws".to_string(),
+            package_path: Some("apps/web".to_string()),
+            language: "typescript".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "stryker".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: Some(0.80),
+                coverage: None,
+            }],
+        };
+        let mut slash_entry = base_entry.clone();
+        let mut underscore_entry = base_entry.clone();
+        slash_entry.package_path     = Some("apps/web".to_string());
+        underscore_entry.package_path = Some("apps_web".to_string());
+
+        save_entry(&slash_entry,      dir.path()).unwrap();
+        save_entry(&underscore_entry, dir.path()).unwrap();
+
+        let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
+        assert_eq!(files.len(), 2,
+            "apps/web and apps_web sanitize to the same string but must produce distinct files");
     }
 
     #[test]
