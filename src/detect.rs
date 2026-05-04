@@ -142,9 +142,94 @@ fn stamp_workspace_root(members: Vec<(String, ProjectInfo)>, root: &str) -> Vec<
     }).collect()
 }
 
-/// Returns `(relative_path, ProjectInfo)` pairs from Cargo.toml [workspace] members list.
-/// Handles both literal paths (`"crates/foo"`) and glob patterns (`"crates/*"`).
+/// Returns `(relative_path, ProjectInfo)` pairs from a Cargo workspace root.
+///
+/// Uses `toml` parsing instead of line-scanning to handle:
+/// - `workspace.members` patterns (literal and glob)
+/// - `workspace.exclude` to skip matched members
+/// - Root packages (Cargo.toml has both `[package]` and `[workspace]`)
+/// - De-duplication (overlapping patterns like `["crates/*", "crates/api"]`)
 fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, ProjectInfo)> {
+    // Try TOML-based parsing first; fall back to the old line scanner on failure.
+    if let Ok(doc) = toml::from_str::<toml::Value>(content) {
+        return parse_cargo_workspace_members_toml(root, &doc);
+    }
+    parse_cargo_workspace_members_fallback(root, content)
+}
+
+fn parse_cargo_workspace_members_toml(root: &Path, doc: &toml::Value) -> Vec<(String, ProjectInfo)> {
+    let workspace = match doc.get("workspace") {
+        Some(w) => w,
+        None => return Vec::new(),
+    };
+
+    let member_patterns: Vec<&str> = workspace
+        .get("members")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let exclude_patterns: Vec<&str> = workspace
+        .get("exclude")
+        .and_then(|e| e.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, ProjectInfo)> = Vec::new();
+
+    // Expand member patterns, respecting exclusions and de-duplicating.
+    for pattern in &member_patterns {
+        let candidates = if pattern.contains('*') {
+            let fake = format!("- {}", pattern);
+            expand_glob_patterns(root, &fake)
+        } else {
+            let full = root.join(pattern);
+            if full.is_dir() {
+                detect_project(&full).ok()
+                    .map(|info| (pattern.to_string(), info))
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
+
+        for (rel, info) in candidates {
+            // Apply exclude list: skip if this relative path matches any exclude pattern.
+            let excluded = exclude_patterns.iter().any(|ex| {
+                if ex.contains('*') {
+                    // Minimal prefix glob: "crates/*" excludes "crates/foo"
+                    if let Some(prefix) = ex.strip_suffix("/*") {
+                        rel == *ex || rel.starts_with(&format!("{}/", prefix))
+                    } else {
+                        rel == *ex
+                    }
+                } else {
+                    rel == *ex
+                }
+            });
+            if excluded { continue; }
+
+            if seen.insert(rel.clone()) {
+                members.push((rel, info));
+            }
+        }
+    }
+
+    // If the root Cargo.toml also has a [package] section, it is itself a
+    // workspace member. Cargo treats it as such; include it as path ".".
+    if doc.get("package").is_some() && seen.insert(".".to_string()) {
+        if let Ok(root_info) = detect_project(root) {
+            members.push((".".to_string(), root_info));
+        }
+    }
+
+    members
+}
+
+/// Line-scanner fallback for unparseable TOML (preserves old behavior).
+fn parse_cargo_workspace_members_fallback(root: &Path, content: &str) -> Vec<(String, ProjectInfo)> {
     let mut members = Vec::new();
     let mut in_members = false;
 
@@ -160,7 +245,6 @@ fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, Pro
                 let rel = &s[..end];
                 if !rel.is_empty() {
                     if rel.contains('*') {
-                        // Glob pattern — route through shared expansion logic
                         let fake = format!("- {}", rel);
                         members.extend(expand_glob_patterns(root, &fake));
                     } else {
@@ -938,6 +1022,104 @@ mod tests {
                     "single-project workspace_root must be None");
             }
             _ => panic!("Expected Single"),
+        }
+    }
+
+    // ── Cargo workspace hardening ─────────────────────────────────────────────
+
+    #[test]
+    fn cargo_workspace_with_package_and_workspace_includes_root_as_dot() {
+        // Root Cargo.toml has both [package] and [workspace]: root is itself a member.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[package]\nname=\"root-crate\"\n[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
+        let a = dir.path().join("crates/a");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("Cargo.toml"), b"[package]\nname=\"a\"").unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"."), "root package must be included as \".\"");
+                assert!(paths.contains(&"crates/a"), "declared member must still be present");
+                assert_eq!(members.len(), 2);
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn cargo_workspace_exclude_removes_matching_members() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"crates/experimental\"]\n").unwrap();
+        for name in &["api", "core", "experimental"] {
+            let p = dir.path().join("crates").join(name);
+            fs::create_dir_all(&p).unwrap();
+            fs::write(p.join("Cargo.toml"), format!("[package]\nname=\"{}\"", name).as_bytes()).unwrap();
+        }
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(!paths.iter().any(|p| p.ends_with("experimental")),
+                    "excluded member must not appear");
+                assert!(paths.iter().any(|p| p.ends_with("api")),
+                    "non-excluded member must be present");
+                assert!(paths.iter().any(|p| p.ends_with("core")),
+                    "non-excluded member must be present");
+                assert_eq!(members.len(), 2);
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn cargo_workspace_deduplicates_overlapping_patterns() {
+        // "crates/*" and "crates/api" both match crates/api — should appear only once.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/*\", \"crates/api\"]\n").unwrap();
+        let api = dir.path().join("crates/api");
+        let lib = dir.path().join("crates/lib");
+        fs::create_dir_all(&api).unwrap();
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(api.join("Cargo.toml"), b"[package]\nname=\"api\"").unwrap();
+        fs::write(lib.join("Cargo.toml"), b"[package]\nname=\"lib\"").unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let api_count = members.iter().filter(|(p, _)| p.ends_with("api")).count();
+                assert_eq!(api_count, 1, "crates/api must appear exactly once despite duplicate patterns");
+                assert_eq!(members.len(), 2, "total members must be 2 (api + lib)");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn cargo_workspace_root_member_has_workspace_root_stamped() {
+        // The "." root member must also get workspace_root set.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"),
+            b"[package]\nname=\"root-crate\"\n[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
+        let a = dir.path().join("crates/a");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("Cargo.toml"), b"[package]\nname=\"a\"").unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let root_member = members.iter().find(|(p, _)| p == ".");
+                assert!(root_member.is_some(), "root member must be present");
+                let (_, info) = root_member.unwrap();
+                assert!(info.workspace_root.is_some(),
+                    "root member must have workspace_root stamped");
+            }
+            _ => panic!("Expected Multi"),
         }
     }
 }
