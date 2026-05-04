@@ -129,7 +129,7 @@ fn handle_stdio() -> ExitCode {
                                 "layers.enabled": "list of layers to run: logic, structural, hostile, operational",
                                 "layers.structural.mutation_testing": "bool — enable mutation testing",
                                 "layers.structural.mutation_threshold": "float 0-100 — minimum mutation score to pass",
-                                "fail_on": "minimum severity to fail: critical, high, medium, low",
+                                "reporting.fail_on": "minimum severity to fail: critical, high, medium, low, any",
                             },
                             "next_steps": [
                                 "Run `barzel run` to verify your project",
