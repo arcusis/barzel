@@ -106,7 +106,8 @@ pub struct ToolStatus {
     /// Agents should install missing `required` tools before running.
     pub required: bool,
     /// Human-readable reason for the applicability decision.
-    pub reason: &'static str,
+    /// In workspace mode this names the member(s) that triggered applicability.
+    pub reason: String,
 }
 
 /// Probe every entry in `TOOL_REGISTRY` using `proc`.
@@ -127,7 +128,7 @@ pub fn probe_all(proc: &dyn SubprocessRunner) -> Vec<ToolStatus> {
             install: entry.install,
             applicable: false,
             required: false,
-            reason: "",
+            reason: String::new(),
         }
     }).collect()
 }
@@ -136,14 +137,53 @@ pub fn probe_all(proc: &dyn SubprocessRunner) -> Vec<ToolStatus> {
 /// Modifies statuses in place; safe to call more than once (idempotent).
 pub fn apply_applicability(statuses: &mut [ToolStatus], project: &ProjectInfo, config: &BarzelConfig) {
     let root = Path::new(&project.root);
+    let ws_root = project.workspace_root.as_deref().map(Path::new);
     let enabled = &config.layers.enabled;
 
     for s in statuses.iter_mut() {
-        let (applicable, reason) = tool_applicability(s.name, project.language, root);
+        let (applicable, reason) = tool_applicability(s.name, project.language, root, ws_root);
         let layer_enabled = enabled.iter().any(|e| e == s.layer || s.layer == "core");
         s.applicable = applicable;
         s.required = applicable && layer_enabled;
-        s.reason = reason;
+        s.reason = reason.to_string();
+    }
+}
+
+/// Enrich statuses with workspace-aggregated applicability across all members.
+/// `applicable = any member says applicable`, `required = any member says required`.
+/// Reason strings identify the contributing member(s) by path and language.
+pub fn apply_applicability_workspace(
+    statuses: &mut [ToolStatus],
+    members: &[(String, ProjectInfo)],
+    config: &BarzelConfig,
+) {
+    let enabled = &config.layers.enabled;
+
+    for s in statuses.iter_mut() {
+        let mut contributing: Vec<String> = Vec::new();
+        let mut any_applicable = false;
+        let mut any_required = false;
+
+        for (rel_path, project) in members {
+            let root = Path::new(&project.root);
+            let ws_root = project.workspace_root.as_deref().map(Path::new);
+            let (applicable, _) = tool_applicability(s.name, project.language, root, ws_root);
+            if applicable {
+                any_applicable = true;
+                let layer_enabled = enabled.iter().any(|e| e == s.layer || s.layer == "core");
+                if layer_enabled { any_required = true; }
+                let lang = project.language.to_string().to_lowercase();
+                contributing.push(format!("{} ({})", rel_path, lang));
+            }
+        }
+
+        s.applicable = any_applicable;
+        s.required = any_required;
+        s.reason = if contributing.is_empty() {
+            "not applicable to any workspace member".to_string()
+        } else {
+            contributing.join(", ")
+        };
     }
 }
 
@@ -158,14 +198,36 @@ pub fn probe_all_with_context(
     statuses
 }
 
-/// Compute applicability for a single tool given language and project root.
+/// Probe tools once and aggregate applicability across all workspace members.
+pub fn probe_all_with_workspace_context(
+    proc: &dyn SubprocessRunner,
+    members: &[(String, ProjectInfo)],
+    config: &BarzelConfig,
+) -> Vec<ToolStatus> {
+    let mut statuses = probe_all(proc);
+    apply_applicability_workspace(&mut statuses, members, config);
+    statuses
+}
+
+/// Compute applicability for a single tool given language, package root, and optional workspace root.
+/// The workspace root is checked as a lockfile fallback for package-manager tools.
 /// Returns `(applicable, reason)`.
-fn tool_applicability(name: &str, language: Language, root: &Path) -> (bool, &'static str) {
-    // Lockfile presence determines which package-manager audit runner is used.
-    let has_pnpm_lock   = root.join("pnpm-lock.yaml").exists();
-    let has_npm_lock    = root.join("package-lock.json").exists();
-    let has_yarn_lock   = root.join("yarn.lock").exists();
-    let no_ts_lockfile  = !has_pnpm_lock && !has_npm_lock && !has_yarn_lock;
+fn tool_applicability(
+    name: &str,
+    language: Language,
+    root: &Path,
+    workspace_root: Option<&Path>,
+) -> (bool, &'static str) {
+    // Lockfile detection: check package root first, then workspace root as fallback.
+    // This handles the common monorepo pattern where lockfiles live at the repo root.
+    let find_lock = |filename: &str| -> bool {
+        root.join(filename).exists()
+            || workspace_root.is_some_and(|ws| ws.join(filename).exists())
+    };
+    let has_pnpm_lock  = find_lock("pnpm-lock.yaml");
+    let has_npm_lock   = find_lock("package-lock.json");
+    let has_yarn_lock  = find_lock("yarn.lock");
+    let no_ts_lockfile = !has_pnpm_lock && !has_npm_lock && !has_yarn_lock;
 
     match name {
         // ── Core runtimes ─────────────────────────────────────────────────────
@@ -190,8 +252,8 @@ fn tool_applicability(name: &str, language: Language, root: &Path) -> (bool, &'s
         "pip-audit"   => (language == Language::Python, "Python project"),
         "semgrep"     => (true, "all projects (cross-language SAST)"),
 
-        // Package-manager audit: lockfile detection, but language-gated so a Rust or
-        // Python project with a stray lockfile is never told to install npm/pnpm/yarn.
+        // Package-manager audit: lockfile detection, language-gated so non-TS projects
+        // with a stray lockfile are never told to install npm/pnpm/yarn.
         "pnpm" => (
             language == Language::TypeScript && has_pnpm_lock,
             if has_pnpm_lock { "pnpm-lock.yaml detected" } else { "not detected" },
@@ -358,7 +420,7 @@ mod tests {
     }
 
     fn make_status(name: &'static str, layer: &'static str, available: bool, install: &'static str) -> ToolStatus {
-        ToolStatus { name, layer, available, install, applicable: false, required: false, reason: "" }
+        ToolStatus { name, layer, available, install, applicable: false, required: false, reason: String::new() }
     }
 
     // ── applicability ─────────────────────────────────────────────────────────
@@ -554,6 +616,120 @@ mod tests {
         // Sanity: applicable-but-not-required tools do not inflate the count
         let applicable_unavailable = statuses.iter().filter(|s| s.applicable && !s.available).count();
         assert!(count <= applicable_unavailable, "count must not exceed applicable-unavailable");
+    }
+
+    // ── workspace aggregation ─────────────────────────────────────────────────
+
+    fn members_rust_and_ts(rust_root: &str, ts_root: &str) -> Vec<(String, crate::detect::ProjectInfo)> {
+        vec![
+            ("crates/api".to_string(), rust_project(rust_root)),
+            ("apps/web".to_string(),   ts_project(ts_root)),
+        ]
+    }
+
+    #[test]
+    fn workspace_aggregates_required_from_rust_and_ts_members() {
+        let rust_dir = tempfile::tempdir().unwrap();
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
+            rust_dir.path().to_str().unwrap(),
+            ts_dir.path().to_str().unwrap(),
+        );
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        // Rust tools must be applicable/required
+        let cargo = statuses.iter().find(|s| s.name == "cargo").unwrap();
+        assert!(cargo.applicable && cargo.required, "cargo required for rust member");
+        assert!(cargo.reason.contains("crates/api"), "reason names the rust member");
+
+        // TS tools must be applicable/required
+        let node = statuses.iter().find(|s| s.name == "node").unwrap();
+        assert!(node.applicable && node.required, "node required for ts member");
+        assert!(node.reason.contains("apps/web"), "reason names the ts member");
+
+        // semgrep required for both
+        let semgrep = statuses.iter().find(|s| s.name == "semgrep").unwrap();
+        assert!(semgrep.applicable && semgrep.required, "semgrep required for all members");
+        assert!(semgrep.reason.contains("crates/api") && semgrep.reason.contains("apps/web"),
+            "semgrep reason lists all members");
+
+        // Python tools not applicable in this workspace
+        let pytest = statuses.iter().find(|s| s.name == "pytest").unwrap();
+        assert!(!pytest.applicable, "pytest not applicable in rust+ts workspace");
+    }
+
+    #[test]
+    fn workspace_rust_member_with_package_lock_does_not_mark_npm_required() {
+        let rust_dir = tempfile::tempdir().unwrap();
+        std::fs::write(rust_dir.path().join("package-lock.json"), b"{}").unwrap();
+        let ts_dir = tempfile::tempdir().unwrap();
+        let members = members_rust_and_ts(
+            rust_dir.path().to_str().unwrap(),
+            ts_dir.path().to_str().unwrap(),
+        );
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        // npm is applicable only because of the TS member (no-lockfile → npm default),
+        // not because of the Rust member's stray package-lock.json
+        let npm = statuses.iter().find(|s| s.name == "npm").unwrap();
+        assert!(npm.applicable, "npm applicable due to TS member");
+        assert!(npm.reason.contains("apps/web"), "npm reason must reference TS member");
+        assert!(!npm.reason.contains("crates/api"), "npm reason must not reference Rust member");
+    }
+
+    #[test]
+    fn workspace_disabled_layer_means_applicable_but_not_required() {
+        let rust_dir = tempfile::tempdir().unwrap();
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
+            rust_dir.path().to_str().unwrap(),
+            ts_dir.path().to_str().unwrap(),
+        );
+        let mut cfg = default_config();
+        cfg.layers.enabled = vec!["logic".to_string(), "hostile".to_string(), "operational".to_string()];
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &cfg);
+
+        let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
+        assert!(mutants.applicable, "cargo mutants still applicable for rust member");
+        assert!(!mutants.required, "cargo mutants not required when structural layer disabled");
+    }
+
+    #[test]
+    fn workspace_missing_count_only_counts_required_and_unavailable() {
+        let rust_dir = tempfile::tempdir().unwrap();
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
+            rust_dir.path().to_str().unwrap(),
+            ts_dir.path().to_str().unwrap(),
+        );
+        let mut statuses = probe_all(&MockProcessRunner::unavailable());
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        let count = missing_required_count(&statuses);
+        let expected = statuses.iter().filter(|s| s.required && !s.available).count();
+        assert_eq!(count, expected);
+        let applicable_unavailable = statuses.iter().filter(|s| s.applicable && !s.available).count();
+        assert!(count <= applicable_unavailable);
+    }
+
+    #[test]
+    fn workspace_root_lockfile_fallback_marks_pnpm_applicable_for_ts_member() {
+        let ws_root = tempfile::tempdir().unwrap();
+        // lockfile is at workspace root, not package root
+        std::fs::write(ws_root.path().join("pnpm-lock.yaml"), b"").unwrap();
+        let pkg_dir = tempfile::tempdir().unwrap();
+        let mut member_info = ts_project(pkg_dir.path().to_str().unwrap());
+        member_info.workspace_root = Some(ws_root.path().to_str().unwrap().to_string());
+        let members = vec![("apps/web".to_string(), member_info)];
+
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        let pnpm = statuses.iter().find(|s| s.name == "pnpm").unwrap();
+        assert!(pnpm.applicable, "pnpm applicable via workspace-root pnpm-lock.yaml");
     }
 
     #[test]

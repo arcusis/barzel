@@ -152,26 +152,13 @@ fn handle_stdio() -> ExitCode {
 
         "check" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match detect::detect_project(path.unwrap_or_else(|| std::path::Path::new("."))) {
-                Ok(project) => {
+            let target = path.unwrap_or_else(|| std::path::Path::new("."));
+            match detect::detect_workspace(target) {
+                Ok(workspace) => {
                     use crate::process::OsProcessRunner;
-                    let cfg = config::BarzelConfig::load_for_project(
-                        path.unwrap_or_else(|| std::path::Path::new("."))
-                    );
-                    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
-                    let tool_json = tool_registry::tool_statuses_to_json(&statuses);
-
-                    let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
-                    let resp = create_response("success", request_id, Some(serde_json::json!({
-                        "language": project.language.to_string(),
-                        "frameworks": {
-                            "is_nextjs": project.frameworks.is_nextjs,
-                            "has_ai_deps": project.frameworks.has_ai_deps,
-                            "ai_frameworks": project.frameworks.ai_frameworks,
-                        },
-                        "missing_required_tools": missing_required,
-                        "tools": tool_json,
-                    })), None);
+                    let cfg = config::BarzelConfig::load_for_project(target);
+                    let payload = build_check_payload(workspace, &cfg, &OsProcessRunner);
+                    let resp = create_response("success", request_id, Some(payload), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
                     ExitCode::SUCCESS
                 }
@@ -527,31 +514,105 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
 
 // ── Check command ─────────────────────────────────────────────────────────────
 
+/// Build the JSON payload for a `check` command. Extracted for testability.
+fn build_check_payload(
+    workspace: detect::WorkspaceInfo,
+    cfg: &config::BarzelConfig,
+    proc: &dyn process::SubprocessRunner,
+) -> serde_json::Value {
+    use detect::WorkspaceInfo;
+    match workspace {
+        WorkspaceInfo::Single(project) => {
+            let statuses = tool_registry::probe_all_with_context(proc, &project, cfg);
+            let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
+            serde_json::json!({
+                "language": project.language.to_string(),
+                "frameworks": {
+                    "is_nextjs": project.frameworks.is_nextjs,
+                    "has_ai_deps": project.frameworks.has_ai_deps,
+                    "ai_frameworks": project.frameworks.ai_frameworks,
+                },
+                "missing_required_tools": missing_required,
+                "tools": tool_json,
+            })
+        }
+        WorkspaceInfo::Multi { kind, members } => {
+            let statuses = tool_registry::probe_all_with_workspace_context(proc, &members, cfg);
+            let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
+            let packages: Vec<_> = members.iter().map(|(rel_path, p)| serde_json::json!({
+                "path":     rel_path,
+                "name":     p.package_name,
+                "language": p.language.to_string(),
+            })).collect();
+            serde_json::json!({
+                "is_workspace":    true,
+                "workspace_kind":  kind,
+                "packages":        packages,
+                "missing_required_tools": missing_required,
+                "tools":           tool_json,
+            })
+        }
+    }
+}
+
 fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
-    use crate::detect::detect_project;
+    use crate::detect::{detect_workspace, WorkspaceInfo};
     use crate::process::OsProcessRunner;
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
-    let project = detect_project(target)?;
     let cfg = config::BarzelConfig::load_for_project(target);
 
-    println!(
-        "{} Barzel tool check — {} project",
-        "→".bright_blue(),
-        project.language.to_string().bright_green()
-    );
+    let (statuses, header, frameworks) = match detect_workspace(target)? {
+        WorkspaceInfo::Single(project) => {
+            let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
+            let header = format!("Barzel tool check — {} project", project.language.to_string().bright_green());
+            let frameworks = Some(project.frameworks);
+            (statuses, header, frameworks)
+        }
+        WorkspaceInfo::Multi { kind, members } => {
+            const MEMBER_DISPLAY_LIMIT: usize = 7;
+            let kind_str = format!("{:?}", kind).to_lowercase();
+            let member_list = if members.len() <= MEMBER_DISPLAY_LIMIT {
+                members.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ")
+            } else {
+                let shown = members[..MEMBER_DISPLAY_LIMIT]
+                    .iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
+                format!("{}, +{} more", shown, members.len() - MEMBER_DISPLAY_LIMIT)
+            };
+            let header = format!(
+                "Barzel workspace check — {} ({} members: {})",
+                kind_str.bright_green(),
+                members.len(),
+                member_list
+            );
+            let statuses = tool_registry::probe_all_with_workspace_context(&OsProcessRunner, &members, &cfg);
+            (statuses, header, None)
+        }
+    };
+
+    println!("{} {}", "→".bright_blue(), header);
     println!();
 
-    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
+    print_check_sections(&statuses, frameworks.as_ref());
 
-    // Partition into three groups
+    Ok(())
+}
+
+fn print_check_sections(
+    statuses: &[tool_registry::ToolStatus],
+    frameworks: Option<&crate::detect::ProjectFrameworks>,
+) {
     let required: Vec<_> = statuses.iter().filter(|s| s.required).collect();
     let applicable_disabled: Vec<_> = statuses.iter().filter(|s| s.applicable && !s.required).collect();
     let not_applicable: Vec<_> = statuses.iter().filter(|s| !s.applicable).collect();
 
-    // Section 1: required tools (applicable + layer enabled)
+    let section_label = if frameworks.is_some() { "this project" } else { "this workspace" };
+
+    // Section 1: required tools
     if !required.is_empty() {
-        println!("  {} Required for this project:", "→".bright_blue());
+        println!("  {} Required for {}:", "→".bright_blue(), section_label);
         let missing_required = required.iter().filter(|s| !s.available).count();
         for s in &required {
             let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
@@ -572,7 +633,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Section 2: applicable but layer disabled — informational only
+    // Section 2: applicable but layer disabled
     if !applicable_disabled.is_empty() {
         println!();
         println!("  {} Applicable but layer disabled in config:", "→".dimmed());
@@ -582,7 +643,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Section 3: not applicable — optional ecosystem tools dimmed
+    // Section 3: not applicable
     if !not_applicable.is_empty() {
         println!();
         println!("  {} Other ecosystem tools (not applicable to this project):", "→".dimmed());
@@ -592,22 +653,22 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Show detected frameworks
-    if project.frameworks.has_ai_deps {
-        println!();
-        println!(
-            "  {} AI frameworks detected: {}",
-            "→".bright_blue(),
-            project.frameworks.ai_frameworks.join(", ").bright_yellow()
-        );
-        println!("    aisec runner will activate automatically.");
+    // Framework notes (single-project only)
+    if let Some(fw) = frameworks {
+        if fw.has_ai_deps {
+            println!();
+            println!(
+                "  {} AI frameworks detected: {}",
+                "→".bright_blue(),
+                fw.ai_frameworks.join(", ").bright_yellow()
+            );
+            println!("    aisec runner will activate automatically.");
+        }
+        if fw.is_nextjs {
+            println!();
+            println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
+        }
     }
-    if project.frameworks.is_nextjs {
-        println!();
-        println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
-    }
-
-    Ok(())
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -902,8 +963,8 @@ mod tests {
         // Verify the shared helper produces all four required fields.
         use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
         let statuses = vec![
-            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project" },
-            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects" },
+            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project".to_string() },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects".to_string() },
         ];
         let json = tool_statuses_to_json(&statuses);
         assert_eq!(json.len(), 2);
@@ -932,5 +993,99 @@ mod tests {
         assert!(names.contains(&"npm"),  "npm must be in stdio payload (backs npm audit)");
         assert!(names.contains(&"pnpm"), "pnpm must be in stdio payload (backs pnpm audit)");
         assert!(names.contains(&"yarn"), "yarn must be in stdio payload (backs yarn audit)");
+    }
+
+    // ── workspace check payload contract ──────────────────────────────────────
+
+    fn make_project(language: Language, root: &str) -> ProjectInfo {
+        ProjectInfo {
+            language,
+            root: root.to_string(),
+            has_tests: true,
+            package_name: Some(root.split('/').last().unwrap_or("pkg").to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        }
+    }
+
+    #[test]
+    fn check_payload_single_project_preserves_pr24_shape() {
+        use crate::detect::WorkspaceInfo;
+        use crate::process::MockProcessRunner;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = WorkspaceInfo::Single(make_project(Language::Rust, dir.path().to_str().unwrap()));
+        let cfg = config::BarzelConfig::default();
+        let payload = build_check_payload(ws, &cfg, &MockProcessRunner::passing("ok"));
+
+        assert_eq!(payload["language"].as_str(), Some("rust"));
+        assert!(payload.get("frameworks").is_some(), "frameworks key required");
+        assert!(payload["missing_required_tools"].is_number(), "missing_required_tools must be a number");
+        assert!(payload["tools"].is_array(), "tools must be an array");
+        assert!(payload.get("is_workspace").is_none(), "Single must not emit is_workspace");
+        assert!(payload.get("packages").is_none(), "Single must not emit packages");
+
+        // All tool entries must have the required shape fields
+        for tool in payload["tools"].as_array().unwrap() {
+            for key in &["name", "layer", "available", "install", "applicable", "required", "reason"] {
+                assert!(tool.get(key).is_some(), "tool entry missing field '{key}'");
+            }
+        }
+    }
+
+    #[test]
+    fn check_payload_multi_workspace_contract() {
+        use crate::detect::{WorkspaceInfo, WorkspaceKind};
+        use crate::process::MockProcessRunner;
+        let rust_dir = tempfile::tempdir().unwrap();
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let ws = WorkspaceInfo::Multi {
+            kind: WorkspaceKind::Cargo,
+            members: vec![
+                ("crates/api".to_string(), make_project(Language::Rust, rust_dir.path().to_str().unwrap())),
+                ("apps/web".to_string(),   make_project(Language::TypeScript, ts_dir.path().to_str().unwrap())),
+            ],
+        };
+        let cfg = config::BarzelConfig::default();
+        let payload = build_check_payload(ws, &cfg, &MockProcessRunner::passing("ok"));
+
+        // Workspace envelope
+        assert_eq!(payload["is_workspace"].as_bool(), Some(true));
+        assert_eq!(payload["workspace_kind"].as_str(), Some("cargo"));
+
+        // packages list
+        let pkgs = payload["packages"].as_array().expect("packages must be array");
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0]["path"].as_str(), Some("crates/api"));
+        assert_eq!(pkgs[0]["language"].as_str(), Some("rust"));
+        assert_eq!(pkgs[1]["path"].as_str(), Some("apps/web"));
+        assert_eq!(pkgs[1]["language"].as_str(), Some("typescript"));
+
+        // top-level aggregated count
+        assert!(payload["missing_required_tools"].is_number());
+
+        // tools list is aggregated and has correct shape
+        let tools = payload["tools"].as_array().expect("tools must be array");
+        assert!(!tools.is_empty());
+        for tool in tools {
+            for key in &["name", "layer", "available", "install", "applicable", "required", "reason"] {
+                assert!(tool.get(key).is_some(), "tool entry missing field '{key}'");
+            }
+        }
+
+        // Rust tools applicable, TypeScript tools applicable
+        let cargo = tools.iter().find(|t| t["name"] == "cargo").expect("cargo must be present");
+        assert_eq!(cargo["applicable"].as_bool(), Some(true), "cargo applicable for rust member");
+        assert_eq!(cargo["required"].as_bool(), Some(true), "cargo required for rust member");
+
+        let node = tools.iter().find(|t| t["name"] == "node").expect("node must be present");
+        assert_eq!(node["applicable"].as_bool(), Some(true), "node applicable for ts member");
+
+        // reason must name contributing members
+        let cargo_reason = cargo["reason"].as_str().unwrap_or("");
+        assert!(cargo_reason.contains("crates/api"), "cargo reason must name rust member");
+
+        // Single contract fields must be absent
+        assert!(payload.get("language").is_none(), "Multi must not emit top-level language");
+        assert!(payload.get("frameworks").is_none(), "Multi must not emit top-level frameworks");
     }
 }
