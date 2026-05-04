@@ -13,9 +13,7 @@ pub struct KaniRunner {
 
 impl Default for KaniRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -207,20 +205,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info() -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> KaniRunner {
-        KaniRunner {
-            proc: Arc::new(mock),
-        }
+        KaniRunner { proc: Arc::new(mock) }
     }
 
     // ── runner metadata ───────────────────────────────────────────────────────
@@ -232,10 +221,7 @@ mod tests {
 
     #[test]
     fn layer_is_logic() {
-        assert!(matches!(
-            KaniRunner::default().layer(),
-            crate::plugin::Layer::Logic
-        ));
+        assert!(matches!(KaniRunner::default().layer(), crate::plugin::Layer::Logic));
     }
 
     #[test]
@@ -248,14 +234,7 @@ mod tests {
 
     #[test]
     fn not_available_for_typescript() {
-        let info = ProjectInfo {
-            language: Language::TypeScript,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!KaniRunner::default().is_available(&info));
     }
 
@@ -265,17 +244,8 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"#[kani::proof]\nfn verify() {}").unwrap();
-        let info = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
-        let r = KaniRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = KaniRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         assert!(!r.is_available(&info));
     }
 
@@ -285,17 +255,8 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"fn main() {}").unwrap();
-        let info = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
-        let r = KaniRunner {
-            proc: Arc::new(MockProcessRunner::passing("kani 0.40")),
-        };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = KaniRunner { proc: Arc::new(MockProcessRunner::passing("kani 0.40")) };
         assert!(!r.is_available(&info));
     }
 
@@ -305,17 +266,8 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("lib.rs"), b"#[kani::proof]\nfn verify() {}").unwrap();
-        let info = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
-        let r = KaniRunner {
-            proc: Arc::new(MockProcessRunner::passing("kani 0.40")),
-        };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = KaniRunner { proc: Arc::new(MockProcessRunner::passing("kani 0.40")) };
         assert!(r.is_available(&info));
     }
 
@@ -324,9 +276,7 @@ mod tests {
     #[test]
     fn run_returns_pass_on_successful_verification() {
         let stdout = "VERIFICATION:- SUCCESSFUL\nVERIFICATION:- SUCCESSFUL";
-        let result = runner_with(MockProcessRunner::passing(stdout))
-            .run(&rust_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&rust_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.passed, 2);
         assert_eq!(result.metrics.failed, 0);
@@ -336,9 +286,7 @@ mod tests {
     #[test]
     fn run_returns_fail_on_verification_failure() {
         let stdout = "VERIFICATION:- FAILED";
-        let result = runner_with(MockProcessRunner::failing(stdout))
-            .run(&rust_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&rust_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert!(!result.findings.is_empty());
     }
@@ -347,21 +295,11 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "cargo not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cargo not found"))
             }
         }
-        let runner = KaniRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = KaniRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&rust_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -435,9 +373,7 @@ mod tests {
         let findings = extract_kani_failures(output);
         assert!(!findings.is_empty());
         assert!(matches!(
-            findings
-                .iter()
-                .find(|f| matches!(f.severity, Severity::Critical | Severity::High)),
+            findings.iter().find(|f| matches!(f.severity, Severity::Critical | Severity::High)),
             Some(_)
         ));
     }

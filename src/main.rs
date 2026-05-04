@@ -142,15 +142,7 @@ fn handle_stdio() -> ExitCode {
         "run" => {
             let path = req.project_path.as_deref().map(Path::new);
             let since = req.since.as_deref();
-            match run::run_verification(
-                path,
-                req.layers,
-                req.no_cache,
-                req.fail_fast,
-                true,
-                false,
-                since,
-            ) {
+            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true, false, since) {
                 Ok(report) => {
                     let exit_code = report_exit_code(&report);
                     let data = build_run_data(&report);
@@ -200,13 +192,7 @@ fn handle_stdio() -> ExitCode {
         }
 
         other => {
-            emit_error(
-                request_id,
-                format!(
-                    "unknown command: '{}'. Valid commands: init, run, check, report",
-                    other
-                ),
-            );
+            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check, report", other));
             ExitCode::from(1)
         }
     }
@@ -228,13 +214,12 @@ fn build_stdio_report_payload(
 
     if let Some(refs) = compare {
         if refs.len() != 2 {
-            return Err(crate::error::BarzelError::Detection(format!(
-                "compare requires exactly 2 report refs, got {}",
-                refs.len()
-            )));
+            return Err(crate::error::BarzelError::Detection(
+                format!("compare requires exactly 2 report refs, got {}", refs.len())
+            ));
         }
         let baseline = load_report_by_ref(base, &refs[0])?;
-        let head = load_report_by_ref(base, &refs[1])?;
+        let head     = load_report_by_ref(base, &refs[1])?;
         let cmp = compare::compare_reports(&baseline, &head);
         return Ok(serde_json::json!({ "comparison": cmp }));
     }
@@ -254,112 +239,87 @@ fn build_run_data(report: &BarzelReport) -> serde_json::Value {
     // For workspaces: flatten action_items from per-package member reports with package context.
     // For single projects: flatten from report.layers directly (unchanged behavior).
     let mut action_items: Vec<serde_json::Value> = if is_workspace {
-        report
-            .workspace_members
-            .iter()
-            .flat_map(|member| {
-                member.layers.iter().flat_map(move |layer| {
-                    layer.findings.iter().filter_map(move |f| {
-                        if matches!(f.severity, Severity::Info) {
-                            return None;
-                        }
-                        Some(serde_json::json!({
-                            "priority":     severity_priority(&f.severity),
-                            "package_path": member.package_path,
-                            "layer":        layer.name,
-                            "runner":       layer.runner,
-                            "severity":     f.severity,
-                            "code":         f.code,
-                            "message":      f.message,
-                            "location":     f.location,
-                            "reproduce_cmd": f.reproduce_cmd,
-                            "suggestion":   f.suggestion,
-                        }))
-                    })
-                })
-            })
-            .collect()
-    } else {
-        report
-            .layers
-            .iter()
-            .flat_map(|layer| {
+        report.workspace_members.iter().flat_map(|member| {
+            member.layers.iter().flat_map(move |layer| {
                 layer.findings.iter().filter_map(move |f| {
-                    if matches!(f.severity, Severity::Info) {
-                        return None;
-                    }
+                    if matches!(f.severity, Severity::Info) { return None; }
                     Some(serde_json::json!({
-                        "priority": severity_priority(&f.severity),
-                        "layer":    layer.name,
-                        "runner":   layer.runner,
-                        "severity": f.severity,
-                        "code":     f.code,
-                        "message":  f.message,
-                        "location": f.location,
+                        "priority":     severity_priority(&f.severity),
+                        "package_path": member.package_path,
+                        "layer":        layer.name,
+                        "runner":       layer.runner,
+                        "severity":     f.severity,
+                        "code":         f.code,
+                        "message":      f.message,
+                        "location":     f.location,
                         "reproduce_cmd": f.reproduce_cmd,
-                        "suggestion":    f.suggestion,
+                        "suggestion":   f.suggestion,
                     }))
                 })
             })
-            .collect()
+        }).collect()
+    } else {
+        report.layers.iter().flat_map(|layer| {
+            layer.findings.iter().filter_map(move |f| {
+                if matches!(f.severity, Severity::Info) { return None; }
+                Some(serde_json::json!({
+                    "priority": severity_priority(&f.severity),
+                    "layer":    layer.name,
+                    "runner":   layer.runner,
+                    "severity": f.severity,
+                    "code":     f.code,
+                    "message":  f.message,
+                    "location": f.location,
+                    "reproduce_cmd": f.reproduce_cmd,
+                    "suggestion":    f.suggestion,
+                }))
+            })
+        }).collect()
     };
     action_items.sort_by_key(|v| v["priority"].as_u64().unwrap_or(99));
 
     // Per-layer summary for quick agent parsing
     let layers_json = |layers: &[crate::report::LayerResult]| -> Vec<serde_json::Value> {
-        layers
-            .iter()
-            .map(|l| {
-                let findings: Vec<serde_json::Value> = l
-                    .findings
-                    .iter()
-                    .map(|f| {
-                        serde_json::json!({
-                            "severity":     f.severity,
-                            "code":         f.code,
-                            "message":      f.message,
-                            "location":     f.location,
-                            "reproduce_cmd": f.reproduce_cmd,
-                            "suggestion":   f.suggestion,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "name":     l.name,
-                    "runner":   l.runner,
-                    "status":   l.status,
-                    "tests_run": l.metrics.tests_run,
-                    "passed":    l.metrics.passed,
-                    "failed":    l.metrics.failed,
-                    "mutation_score": l.metrics.mutation_score,
-                    "duration_ms": l.duration_ms,
-                    "findings": findings,
-                })
+        layers.iter().map(|l| {
+            let findings: Vec<serde_json::Value> = l.findings.iter().map(|f| serde_json::json!({
+                "severity":     f.severity,
+                "code":         f.code,
+                "message":      f.message,
+                "location":     f.location,
+                "reproduce_cmd": f.reproduce_cmd,
+                "suggestion":   f.suggestion,
+            })).collect();
+            serde_json::json!({
+                "name":     l.name,
+                "runner":   l.runner,
+                "status":   l.status,
+                "tests_run": l.metrics.tests_run,
+                "passed":    l.metrics.passed,
+                "failed":    l.metrics.failed,
+                "mutation_score": l.metrics.mutation_score,
+                "duration_ms": l.duration_ms,
+                "findings": findings,
             })
-            .collect()
+        }).collect()
     };
 
     // For workspaces, expose per-package structure; for single projects, flat layers list
-    let workspace_json: Vec<serde_json::Value> = report
-        .workspace_members
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "package_path":    m.package_path,
-                "language":        m.language,
-                "status":          m.status,
-                "summary": {
-                    "total_findings": m.summary.total_findings,
-                    "critical":       m.summary.critical,
-                    "high":           m.summary.high,
-                    "medium":         m.summary.medium,
-                    "low":            m.summary.low,
-                    "overall_status": m.summary.overall_status,
-                },
-                "layers": layers_json(&m.layers),
-            })
+    let workspace_json: Vec<serde_json::Value> = report.workspace_members.iter().map(|m| {
+        serde_json::json!({
+            "package_path":    m.package_path,
+            "language":        m.language,
+            "status":          m.status,
+            "summary": {
+                "total_findings": m.summary.total_findings,
+                "critical":       m.summary.critical,
+                "high":           m.summary.high,
+                "medium":         m.summary.medium,
+                "low":            m.summary.low,
+                "overall_status": m.summary.overall_status,
+            },
+            "layers": layers_json(&m.layers),
         })
-        .collect();
+    }).collect();
 
     // Always include top-level layers (aggregate) — agents always expect data.layers
     let mut payload = serde_json::json!({
@@ -409,9 +369,7 @@ fn report_exit_code(report: &BarzelReport) -> ExitCode {
     // Check if any finding meets or exceeds the fail_on threshold
     let fail = match report.fail_on.as_str() {
         "critical" => report.summary.critical > 0,
-        "medium" => {
-            report.summary.critical > 0 || report.summary.high > 0 || report.summary.medium > 0
-        }
+        "medium"   => report.summary.critical > 0 || report.summary.high > 0 || report.summary.medium > 0,
         "any" | "low" => report.summary.total_findings > 0,
         _ => report.summary.critical > 0 || report.summary.high > 0, // "high" (default)
     };
@@ -436,14 +394,19 @@ fn cmd_report(id: Option<String>) -> error::Result<()> {
     let base = Path::new(".");
 
     let report = match &id {
-        Some(id_str) if id_str != "latest" => report::BarzelReport::load_by_id(base, id_str)?,
+        Some(id_str) if id_str != "latest" => {
+            report::BarzelReport::load_by_id(base, id_str)?
+        }
         _ => report::BarzelReport::load_latest(base)?,
     };
 
     let r = match report {
         Some(r) => r,
         None => {
-            println!("{} No reports found in .barzel/reports/", "→".bright_blue());
+            println!(
+                "{} No reports found in .barzel/reports/",
+                "→".bright_blue()
+            );
             println!("Run `barzel run` first to generate a report.");
             return Ok(());
         }
@@ -520,9 +483,7 @@ fn load_report_by_ref(base: &Path, id_ref: &str) -> error::Result<BarzelReport> 
     } else {
         BarzelReport::load_by_id(base, id_ref)?
     };
-    report.ok_or_else(|| {
-        crate::error::BarzelError::Detection(format!("report not found: {}", id_ref))
-    })
+    report.ok_or_else(|| crate::error::BarzelError::Detection(format!("report not found: {}", id_ref)))
 }
 
 fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Result<()> {
@@ -540,7 +501,7 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
     // Human output
     let verdict_str = match cmp.verdict {
         compare::Verdict::Regressed => "REGRESSED".bright_red().to_string(),
-        compare::Verdict::Improved => "IMPROVED".bright_green().to_string(),
+        compare::Verdict::Improved  => "IMPROVED".bright_green().to_string(),
         compare::Verdict::Unchanged => "UNCHANGED".dimmed().to_string(),
     };
 
@@ -565,144 +526,39 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
     println!();
 
     if !cmp.regressions.is_empty() {
-        println!(
-            "  {} Regressions ({})",
-            "✗".bright_red(),
-            cmp.regressions.len()
-        );
+        println!("  {} Regressions ({})", "✗".bright_red(), cmp.regressions.len());
         for r in &cmp.regressions {
             match r {
-                compare::Regression::StatusWorsened {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                } => println!(
-                    "    {} [{}/{}] {:?} → {:?}",
-                    "↓".bright_red(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
-                compare::Regression::NewFinding {
-                    layer,
-                    runner,
-                    code,
-                    severity,
-                    message,
-                    location,
-                } => {
+                compare::Regression::StatusWorsened { layer, runner, from, to } =>
+                    println!("    {} [{}/{}] {:?} → {:?}", "↓".bright_red(), layer, runner, from, to),
+                compare::Regression::NewFinding { layer, runner, code, severity, message, location } => {
                     let sev = format!("[{:?}]", severity).bright_red().to_string();
-                    println!(
-                        "    {} {} [{}/{}] {} — {}",
-                        "↓".bright_red(),
-                        sev,
-                        layer,
-                        runner,
-                        code,
-                        message
-                    );
+                    println!("    {} {} [{}/{}] {} — {}", "↓".bright_red(), sev, layer, runner, code, message);
                     if let Some(loc) = location {
                         println!("        at {}", loc.dimmed());
                     }
                 }
-                compare::Regression::CoverageDrop {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                    ..
-                } => println!(
-                    "    {} [coverage/{}/{}] {:.1}% → {:.1}%",
-                    "↓".bright_red(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
-                compare::Regression::MutationScoreDrop {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                    ..
-                } => println!(
-                    "    {} [mutation/{}/{}] {:.1}% → {:.1}%",
-                    "↓".bright_red(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
+                compare::Regression::CoverageDrop { layer, runner, from, to, .. } =>
+                    println!("    {} [coverage/{}/{}] {:.1}% → {:.1}%", "↓".bright_red(), layer, runner, from, to),
+                compare::Regression::MutationScoreDrop { layer, runner, from, to, .. } =>
+                    println!("    {} [mutation/{}/{}] {:.1}% → {:.1}%", "↓".bright_red(), layer, runner, from, to),
             }
         }
         println!();
     }
 
     if !cmp.improvements.is_empty() {
-        println!(
-            "  {} Improvements ({})",
-            "✓".bright_green(),
-            cmp.improvements.len()
-        );
+        println!("  {} Improvements ({})", "✓".bright_green(), cmp.improvements.len());
         for i in &cmp.improvements {
             match i {
-                compare::Improvement::StatusImproved {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                } => println!(
-                    "    {} [{}/{}] {:?} → {:?}",
-                    "↑".bright_green(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
-                compare::Improvement::FindingResolved {
-                    layer,
-                    runner,
-                    code,
-                    severity,
-                    ..
-                } => println!(
-                    "    {} [{:?}] [{}/{}] {} resolved",
-                    "↑".bright_green(),
-                    severity,
-                    layer,
-                    runner,
-                    code
-                ),
-                compare::Improvement::CoverageImproved {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                    ..
-                } => println!(
-                    "    {} [coverage/{}/{}] {:.1}% → {:.1}%",
-                    "↑".bright_green(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
-                compare::Improvement::MutationScoreImproved {
-                    layer,
-                    runner,
-                    from,
-                    to,
-                    ..
-                } => println!(
-                    "    {} [mutation/{}/{}] {:.1}% → {:.1}%",
-                    "↑".bright_green(),
-                    layer,
-                    runner,
-                    from,
-                    to
-                ),
+                compare::Improvement::StatusImproved { layer, runner, from, to } =>
+                    println!("    {} [{}/{}] {:?} → {:?}", "↑".bright_green(), layer, runner, from, to),
+                compare::Improvement::FindingResolved { layer, runner, code, severity, .. } =>
+                    println!("    {} [{:?}] [{}/{}] {} resolved", "↑".bright_green(), severity, layer, runner, code),
+                compare::Improvement::CoverageImproved { layer, runner, from, to, .. } =>
+                    println!("    {} [coverage/{}/{}] {:.1}% → {:.1}%", "↑".bright_green(), layer, runner, from, to),
+                compare::Improvement::MutationScoreImproved { layer, runner, from, to, .. } =>
+                    println!("    {} [mutation/{}/{}] {:.1}% → {:.1}%", "↑".bright_green(), layer, runner, from, to),
             }
         }
         println!();
@@ -724,10 +580,7 @@ fn build_check_payload(
         WorkspaceInfo::Single(project) => {
             let statuses = tool_registry::probe_all_with_context(proc, &project, cfg);
             let tool_json = tool_registry::tool_statuses_to_json(&statuses);
-            let missing_required = statuses
-                .iter()
-                .filter(|s| s.required && !s.available)
-                .count();
+            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
             serde_json::json!({
                 "language": project.language.to_string(),
                 "frameworks": {
@@ -742,20 +595,12 @@ fn build_check_payload(
         WorkspaceInfo::Multi { kind, members } => {
             let statuses = tool_registry::probe_all_with_workspace_context(proc, &members, cfg);
             let tool_json = tool_registry::tool_statuses_to_json(&statuses);
-            let missing_required = statuses
-                .iter()
-                .filter(|s| s.required && !s.available)
-                .count();
-            let packages: Vec<_> = members
-                .iter()
-                .map(|(rel_path, p)| {
-                    serde_json::json!({
-                        "path":     rel_path,
-                        "name":     p.package_name,
-                        "language": p.language.to_string(),
-                    })
-                })
-                .collect();
+            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
+            let packages: Vec<_> = members.iter().map(|(rel_path, p)| serde_json::json!({
+                "path":     rel_path,
+                "name":     p.package_name,
+                "language": p.language.to_string(),
+            })).collect();
             serde_json::json!({
                 "is_workspace":    true,
                 "workspace_kind":  kind,
@@ -777,10 +622,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     let (statuses, header, frameworks) = match detect_workspace(target)? {
         WorkspaceInfo::Single(project) => {
             let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
-            let header = format!(
-                "Barzel tool check — {} project",
-                project.language.to_string().bright_green()
-            );
+            let header = format!("Barzel tool check — {} project", project.language.to_string().bright_green());
             let frameworks = Some(project.frameworks);
             (statuses, header, frameworks)
         }
@@ -788,17 +630,10 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
             const MEMBER_DISPLAY_LIMIT: usize = 7;
             let kind_str = format!("{:?}", kind).to_lowercase();
             let member_list = if members.len() <= MEMBER_DISPLAY_LIMIT {
-                members
-                    .iter()
-                    .map(|(p, _)| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                members.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ")
             } else {
                 let shown = members[..MEMBER_DISPLAY_LIMIT]
-                    .iter()
-                    .map(|(p, _)| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    .iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
                 format!("{}, +{} more", shown, members.len() - MEMBER_DISPLAY_LIMIT)
             };
             let header = format!(
@@ -807,8 +642,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
                 members.len(),
                 member_list
             );
-            let statuses =
-                tool_registry::probe_all_with_workspace_context(&OsProcessRunner, &members, &cfg);
+            let statuses = tool_registry::probe_all_with_workspace_context(&OsProcessRunner, &members, &cfg);
             (statuses, header, None)
         }
     };
@@ -826,46 +660,26 @@ fn print_check_sections(
     frameworks: Option<&crate::detect::ProjectFrameworks>,
 ) {
     let required: Vec<_> = statuses.iter().filter(|s| s.required).collect();
-    let applicable_disabled: Vec<_> = statuses
-        .iter()
-        .filter(|s| s.applicable && !s.required)
-        .collect();
+    let applicable_disabled: Vec<_> = statuses.iter().filter(|s| s.applicable && !s.required).collect();
     let not_applicable: Vec<_> = statuses.iter().filter(|s| !s.applicable).collect();
 
-    let section_label = if frameworks.is_some() {
-        "this project"
-    } else {
-        "this workspace"
-    };
+    let section_label = if frameworks.is_some() { "this project" } else { "this workspace" };
 
     // Section 1: required tools
     if !required.is_empty() {
         println!("  {} Required for {}:", "→".bright_blue(), section_label);
         let missing_required = required.iter().filter(|s| !s.available).count();
         for s in &required {
-            let icon = if s.available {
-                "✓".bright_green().to_string()
-            } else {
-                "✗".bright_red().to_string()
-            };
+            let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
             println!(
                 "    {} {:<20} [{:<12}]{}",
-                icon,
-                s.name,
-                s.layer,
-                if s.available {
-                    String::new()
-                } else {
-                    format!("  install: {}", s.install.dimmed())
-                }
+                icon, s.name, s.layer,
+                if s.available { String::new() } else { format!("  install: {}", s.install.dimmed()) }
             );
         }
         println!();
         if missing_required == 0 {
-            println!(
-                "  {} All required tools available — run `barzel run` to start verification.",
-                "✓".bright_green()
-            );
+            println!("  {} All required tools available — run `barzel run` to start verification.", "✓".bright_green());
         } else {
             println!(
                 "  {} {} required tool(s) missing. Install them to enable the corresponding layers.",
@@ -877,36 +691,20 @@ fn print_check_sections(
     // Section 2: applicable but layer disabled
     if !applicable_disabled.is_empty() {
         println!();
-        println!(
-            "  {} Applicable but layer disabled in config:",
-            "→".dimmed()
-        );
+        println!("  {} Applicable but layer disabled in config:", "→".dimmed());
         for s in &applicable_disabled {
             let mark = if s.available { "✓" } else { "–" };
-            println!(
-                "    {} {:<20} [{:<12}]  (layer disabled)",
-                mark.dimmed(),
-                s.name.dimmed(),
-                s.layer.dimmed()
-            );
+            println!("    {} {:<20} [{:<12}]  (layer disabled)", mark.dimmed(), s.name.dimmed(), s.layer.dimmed());
         }
     }
 
     // Section 3: not applicable
     if !not_applicable.is_empty() {
         println!();
-        println!(
-            "  {} Other ecosystem tools (not applicable to this project):",
-            "→".dimmed()
-        );
+        println!("  {} Other ecosystem tools (not applicable to this project):", "→".dimmed());
         for s in &not_applicable {
             let mark = if s.available { "✓" } else { "–" };
-            println!(
-                "    {} {:<20} [{:<12}]",
-                mark.dimmed(),
-                s.name.dimmed(),
-                s.layer.dimmed()
-            );
+            println!("    {} {:<20} [{:<12}]", mark.dimmed(), s.name.dimmed(), s.layer.dimmed());
         }
     }
 
@@ -923,10 +721,7 @@ fn print_check_sections(
         }
         if fw.is_nextjs {
             println!();
-            println!(
-                "  {} Next.js project detected — playwright E2E runner available.",
-                "→".bright_blue()
-            );
+            println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
         }
     }
 }
@@ -961,23 +756,8 @@ fn main() -> ExitCode {
             }
         },
 
-        Commands::Run {
-            path,
-            layer,
-            no_cache,
-            fail_fast,
-            json,
-            since,
-        } => {
-            match run::run_verification(
-                path.as_deref(),
-                layer,
-                no_cache,
-                fail_fast,
-                false,
-                json,
-                since.as_deref(),
-            ) {
+        Commands::Run { path, layer, no_cache, fail_fast, json, since } => {
+            match run::run_verification(path.as_deref(), layer, no_cache, fail_fast, false, json, since.as_deref()) {
                 Ok(report) => report_exit_code(&report),
                 Err(e) => {
                     eprintln!("{} {}", "Error:".bright_red(), e);
@@ -1032,10 +812,7 @@ mod tests {
     }
 
     fn make_layer(name: &str, runner: &str, findings: Vec<Finding>) -> LayerResult {
-        let status = if findings
-            .iter()
-            .any(|f| matches!(f.severity, Severity::Critical))
-        {
+        let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
             LayerStatus::Fail
         } else {
             LayerStatus::Pass
@@ -1063,16 +840,12 @@ mod tests {
         report.status = ReportStatus::Fail;
 
         // pkg-a has a Critical finding
-        let pkg_a_layer = make_layer(
-            "hostile",
-            "ai-sec",
-            vec![make_finding(Severity::Critical, "HARDCODED_API_KEY")],
-        );
-        let pkg_b_layer = make_layer(
-            "logic",
-            "pytest",
-            vec![make_finding(Severity::High, "TEST_FAILURE")],
-        );
+        let pkg_a_layer = make_layer("hostile", "ai-sec", vec![
+            make_finding(Severity::Critical, "HARDCODED_API_KEY"),
+        ]);
+        let pkg_b_layer = make_layer("logic", "pytest", vec![
+            make_finding(Severity::High, "TEST_FAILURE"),
+        ]);
 
         report.workspace_members = vec![
             WorkspaceMemberReport {
@@ -1081,11 +854,7 @@ mod tests {
                 status: ReportStatus::Fail,
                 layers: vec![pkg_a_layer.clone()],
                 summary: Summary {
-                    total_findings: 1,
-                    critical: 1,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
+                    total_findings: 1, critical: 1, high: 0, medium: 0, low: 0,
                     overall_status: ReportStatus::Fail,
                 },
             },
@@ -1095,11 +864,7 @@ mod tests {
                 status: ReportStatus::Partial,
                 layers: vec![pkg_b_layer.clone()],
                 summary: Summary {
-                    total_findings: 1,
-                    critical: 0,
-                    high: 1,
-                    medium: 0,
-                    low: 0,
+                    total_findings: 1, critical: 0, high: 1, medium: 0, low: 0,
                     overall_status: ReportStatus::Partial,
                 },
             },
@@ -1117,15 +882,9 @@ mod tests {
         let payload = build_run_data(&report);
 
         let items = payload["action_items"].as_array().unwrap();
-        assert!(
-            !items.is_empty(),
-            "action_items must not be empty for workspace with findings"
-        );
+        assert!(!items.is_empty(), "action_items must not be empty for workspace with findings");
         for item in items {
-            assert!(
-                item.get("package_path").is_some(),
-                "each action_item must have package_path"
-            );
+            assert!(item.get("package_path").is_some(), "each action_item must have package_path");
             assert!(!item["package_path"].as_str().unwrap_or("").is_empty());
         }
     }
@@ -1136,16 +895,12 @@ mod tests {
         let payload = build_run_data(&report);
 
         let items = payload["action_items"].as_array().unwrap();
-        let priorities: Vec<u64> = items
-            .iter()
+        let priorities: Vec<u64> = items.iter()
             .map(|v| v["priority"].as_u64().unwrap_or(99))
             .collect();
         let mut sorted = priorities.clone();
         sorted.sort();
-        assert_eq!(
-            priorities, sorted,
-            "action_items must be sorted by priority (critical first)"
-        );
+        assert_eq!(priorities, sorted, "action_items must be sorted by priority (critical first)");
     }
 
     #[test]
@@ -1154,10 +909,7 @@ mod tests {
         let payload = build_run_data(&report);
 
         let layers = payload["layers"].as_array().unwrap();
-        assert!(
-            !layers.is_empty(),
-            "data.layers must be present even for workspaces"
-        );
+        assert!(!layers.is_empty(), "data.layers must be present even for workspaces");
     }
 
     #[test]
@@ -1179,26 +931,17 @@ mod tests {
             workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
-        report.layers = vec![make_layer(
-            "hostile",
-            "bandit",
-            vec![make_finding(Severity::High, "SQL_INJECTION")],
-        )];
+        report.layers = vec![make_layer("hostile", "bandit", vec![
+            make_finding(Severity::High, "SQL_INJECTION"),
+        ])];
         report.status = ReportStatus::Partial;
 
         let payload = build_run_data(&report);
-        assert_eq!(
-            payload.get("is_workspace"),
-            None,
-            "single project must not have is_workspace"
-        );
+        assert_eq!(payload.get("is_workspace"), None, "single project must not have is_workspace");
         let items = payload["action_items"].as_array().unwrap();
         assert!(!items.is_empty());
         for item in items {
-            assert!(
-                item.get("package_path").is_none(),
-                "single project action_items must not have package_path"
-            );
+            assert!(item.get("package_path").is_none(), "single project action_items must not have package_path");
         }
     }
 
@@ -1250,10 +993,7 @@ mod tests {
     fn diff_mode_absent_when_since_not_set() {
         let report = base_report();
         let payload = build_run_data(&report);
-        assert!(
-            payload.get("diff_mode").is_none(),
-            "diff_mode must be absent when --since not used"
-        );
+        assert!(payload.get("diff_mode").is_none(), "diff_mode must be absent when --since not used");
     }
 
     // ── tool registry / check payload ─────────────────────────────────────────
@@ -1267,11 +1007,9 @@ mod tests {
 
         for entry in &tool_json {
             let install = entry["install"].as_str().unwrap_or("");
-            assert!(
-                !install.is_empty(),
+            assert!(!install.is_empty(),
                 "tool '{}' must have install guidance in stdio payload",
-                entry["name"].as_str().unwrap_or("?")
-            );
+                entry["name"].as_str().unwrap_or("?"));
         }
     }
 
@@ -1280,24 +1018,8 @@ mod tests {
         // Verify the shared helper produces all four required fields.
         use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
         let statuses = vec![
-            ToolStatus {
-                name: "cargo",
-                layer: "core",
-                available: true,
-                install: "https://rustup.rs",
-                applicable: true,
-                required: true,
-                reason: "Rust project".to_string(),
-            },
-            ToolStatus {
-                name: "semgrep",
-                layer: "hostile",
-                available: false,
-                install: "pip install semgrep",
-                applicable: true,
-                required: true,
-                reason: "all projects".to_string(),
-            },
+            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project".to_string() },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects".to_string() },
         ];
         let json = tool_statuses_to_json(&statuses);
         assert_eq!(json.len(), 2);
@@ -1307,10 +1029,7 @@ mod tests {
         assert_eq!(json[0]["install"].as_str(), Some("https://rustup.rs"));
         assert_eq!(json[0]["applicable"].as_bool(), Some(true));
         assert_eq!(json[0]["required"].as_bool(), Some(true));
-        assert!(
-            json[0].get("reason").is_some(),
-            "reason field must be present"
-        );
+        assert!(json[0].get("reason").is_some(), "reason field must be present");
         assert_eq!(json[1]["available"].as_bool(), Some(false));
     }
 
@@ -1319,38 +1038,16 @@ mod tests {
         use crate::process::MockProcessRunner;
         let statuses = tool_registry::probe_all(&MockProcessRunner::passing("ok"));
         let tool_json = tool_registry::tool_statuses_to_json(&statuses);
-        let names: Vec<&str> = tool_json
-            .iter()
+        let names: Vec<&str> = tool_json.iter()
             .filter_map(|v| v["name"].as_str())
             .collect();
-        assert!(
-            names.contains(&"go-mutesting"),
-            "go-mutesting must be in stdio payload"
-        );
-        assert!(
-            names.contains(&"cargo audit"),
-            "cargo audit must be in stdio payload"
-        );
-        assert!(
-            names.contains(&"pip-audit"),
-            "pip-audit must be in stdio payload"
-        );
-        assert!(
-            names.contains(&"semgrep"),
-            "semgrep must be in stdio payload"
-        );
-        assert!(
-            names.contains(&"npm"),
-            "npm must be in stdio payload (backs npm audit)"
-        );
-        assert!(
-            names.contains(&"pnpm"),
-            "pnpm must be in stdio payload (backs pnpm audit)"
-        );
-        assert!(
-            names.contains(&"yarn"),
-            "yarn must be in stdio payload (backs yarn audit)"
-        );
+        assert!(names.contains(&"go-mutesting"), "go-mutesting must be in stdio payload");
+        assert!(names.contains(&"cargo audit"),  "cargo audit must be in stdio payload");
+        assert!(names.contains(&"pip-audit"),    "pip-audit must be in stdio payload");
+        assert!(names.contains(&"semgrep"),      "semgrep must be in stdio payload");
+        assert!(names.contains(&"npm"),  "npm must be in stdio payload (backs npm audit)");
+        assert!(names.contains(&"pnpm"), "pnpm must be in stdio payload (backs pnpm audit)");
+        assert!(names.contains(&"yarn"), "yarn must be in stdio payload (backs yarn audit)");
     }
 
     // ── workspace check payload contract ──────────────────────────────────────
@@ -1376,35 +1073,15 @@ mod tests {
         let payload = build_check_payload(ws, &cfg, &MockProcessRunner::passing("ok"));
 
         assert_eq!(payload["language"].as_str(), Some("rust"));
-        assert!(
-            payload.get("frameworks").is_some(),
-            "frameworks key required"
-        );
-        assert!(
-            payload["missing_required_tools"].is_number(),
-            "missing_required_tools must be a number"
-        );
+        assert!(payload.get("frameworks").is_some(), "frameworks key required");
+        assert!(payload["missing_required_tools"].is_number(), "missing_required_tools must be a number");
         assert!(payload["tools"].is_array(), "tools must be an array");
-        assert!(
-            payload.get("is_workspace").is_none(),
-            "Single must not emit is_workspace"
-        );
-        assert!(
-            payload.get("packages").is_none(),
-            "Single must not emit packages"
-        );
+        assert!(payload.get("is_workspace").is_none(), "Single must not emit is_workspace");
+        assert!(payload.get("packages").is_none(), "Single must not emit packages");
 
         // All tool entries must have the required shape fields
         for tool in payload["tools"].as_array().unwrap() {
-            for key in &[
-                "name",
-                "layer",
-                "available",
-                "install",
-                "applicable",
-                "required",
-                "reason",
-            ] {
+            for key in &["name", "layer", "available", "install", "applicable", "required", "reason"] {
                 assert!(tool.get(key).is_some(), "tool entry missing field '{key}'");
             }
         }
@@ -1415,18 +1092,12 @@ mod tests {
         use crate::detect::{WorkspaceInfo, WorkspaceKind};
         use crate::process::MockProcessRunner;
         let rust_dir = tempfile::tempdir().unwrap();
-        let ts_dir = tempfile::tempdir().unwrap();
+        let ts_dir   = tempfile::tempdir().unwrap();
         let ws = WorkspaceInfo::Multi {
             kind: WorkspaceKind::Cargo,
             members: vec![
-                (
-                    "crates/api".to_string(),
-                    make_project(Language::Rust, rust_dir.path().to_str().unwrap()),
-                ),
-                (
-                    "apps/web".to_string(),
-                    make_project(Language::TypeScript, ts_dir.path().to_str().unwrap()),
-                ),
+                ("crates/api".to_string(), make_project(Language::Rust, rust_dir.path().to_str().unwrap())),
+                ("apps/web".to_string(),   make_project(Language::TypeScript, ts_dir.path().to_str().unwrap())),
             ],
         };
         let cfg = config::BarzelConfig::default();
@@ -1437,9 +1108,7 @@ mod tests {
         assert_eq!(payload["workspace_kind"].as_str(), Some("cargo"));
 
         // packages list
-        let pkgs = payload["packages"]
-            .as_array()
-            .expect("packages must be array");
+        let pkgs = payload["packages"].as_array().expect("packages must be array");
         assert_eq!(pkgs.len(), 2);
         assert_eq!(pkgs[0]["path"].as_str(), Some("crates/api"));
         assert_eq!(pkgs[0]["language"].as_str(), Some("rust"));
@@ -1453,74 +1122,33 @@ mod tests {
         let tools = payload["tools"].as_array().expect("tools must be array");
         assert!(!tools.is_empty());
         for tool in tools {
-            for key in &[
-                "name",
-                "layer",
-                "available",
-                "install",
-                "applicable",
-                "required",
-                "reason",
-            ] {
+            for key in &["name", "layer", "available", "install", "applicable", "required", "reason"] {
                 assert!(tool.get(key).is_some(), "tool entry missing field '{key}'");
             }
         }
 
         // Rust tools applicable, TypeScript tools applicable
-        let cargo = tools
-            .iter()
-            .find(|t| t["name"] == "cargo")
-            .expect("cargo must be present");
-        assert_eq!(
-            cargo["applicable"].as_bool(),
-            Some(true),
-            "cargo applicable for rust member"
-        );
-        assert_eq!(
-            cargo["required"].as_bool(),
-            Some(true),
-            "cargo required for rust member"
-        );
+        let cargo = tools.iter().find(|t| t["name"] == "cargo").expect("cargo must be present");
+        assert_eq!(cargo["applicable"].as_bool(), Some(true), "cargo applicable for rust member");
+        assert_eq!(cargo["required"].as_bool(), Some(true), "cargo required for rust member");
 
-        let node = tools
-            .iter()
-            .find(|t| t["name"] == "node")
-            .expect("node must be present");
-        assert_eq!(
-            node["applicable"].as_bool(),
-            Some(true),
-            "node applicable for ts member"
-        );
+        let node = tools.iter().find(|t| t["name"] == "node").expect("node must be present");
+        assert_eq!(node["applicable"].as_bool(), Some(true), "node applicable for ts member");
 
         // reason must name contributing members
         let cargo_reason = cargo["reason"].as_str().unwrap_or("");
-        assert!(
-            cargo_reason.contains("crates/api"),
-            "cargo reason must name rust member"
-        );
+        assert!(cargo_reason.contains("crates/api"), "cargo reason must name rust member");
 
         // Single contract fields must be absent
-        assert!(
-            payload.get("language").is_none(),
-            "Multi must not emit top-level language"
-        );
-        assert!(
-            payload.get("frameworks").is_none(),
-            "Multi must not emit top-level frameworks"
-        );
+        assert!(payload.get("language").is_none(), "Multi must not emit top-level language");
+        assert!(payload.get("frameworks").is_none(), "Multi must not emit top-level frameworks");
     }
 
     // ── run-data invariant helpers ────────────────────────────────────────────
 
     /// Required keys every action_item must carry, checked for the agent-facing contract.
     const ACTION_ITEM_REQUIRED_KEYS: &[&str] = &[
-        "priority",
-        "layer",
-        "runner",
-        "severity",
-        "code",
-        "message",
-        "reproduce_cmd",
+        "priority", "layer", "runner", "severity", "code", "message", "reproduce_cmd",
     ];
 
     /// Assert all action_items satisfy the agent-facing contract:
@@ -1528,8 +1156,7 @@ mod tests {
     /// - reproduce_cmd is non-null (agents must be able to run it)
     /// - items are sorted by priority (critical=1 first)
     fn assert_action_items_contract(payload: &serde_json::Value) {
-        let items = payload["action_items"]
-            .as_array()
+        let items = payload["action_items"].as_array()
             .expect("action_items must be an array");
 
         for (i, item) in items.iter().enumerate() {
@@ -1547,37 +1174,20 @@ mod tests {
             );
         }
 
-        let priorities: Vec<u64> = items
-            .iter()
+        let priorities: Vec<u64> = items.iter()
             .map(|v| v["priority"].as_u64().unwrap_or(99))
             .collect();
         let mut sorted = priorities.clone();
         sorted.sort();
-        assert_eq!(
-            priorities, sorted,
-            "action_items must be sorted by priority (critical first)"
-        );
+        assert_eq!(priorities, sorted, "action_items must be sorted by priority (critical first)");
     }
 
     /// Assert the top-level keys all run payloads must carry.
     fn assert_run_payload_required_keys(payload: &serde_json::Value) {
-        for key in &[
-            "passed",
-            "overall_status",
-            "action_items",
-            "layers",
-            "total_findings",
-            "critical",
-            "high",
-            "medium",
-            "low",
-            "report_id",
-            "timestamp",
-        ] {
-            assert!(
-                payload.get(*key).is_some(),
-                "run payload missing required key '{key}'"
-            );
+        for key in &["passed", "overall_status", "action_items", "layers",
+                     "total_findings", "critical", "high", "medium", "low",
+                     "report_id", "timestamp"] {
+            assert!(payload.get(*key).is_some(), "run payload missing required key '{key}'");
         }
     }
 
@@ -1594,24 +1204,17 @@ mod tests {
             workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
-        report.layers = vec![make_layer(
-            "hostile",
-            "bandit",
-            vec![
-                make_finding(Severity::Critical, "SQL_INJECTION"),
-                make_finding(Severity::High, "OPEN_REDIRECT"),
-                make_finding(Severity::Medium, "WEAK_CIPHER"),
-            ],
-        )];
+        report.layers = vec![make_layer("hostile", "bandit", vec![
+            make_finding(Severity::Critical, "SQL_INJECTION"),
+            make_finding(Severity::High,     "OPEN_REDIRECT"),
+            make_finding(Severity::Medium,   "WEAK_CIPHER"),
+        ])];
         report.status = ReportStatus::Fail;
 
         let payload = build_run_data(&report);
         assert_action_items_contract(&payload);
-        assert_eq!(
-            payload["action_items"].as_array().unwrap().len(),
-            3,
-            "all three non-info findings must appear as action_items"
-        );
+        assert_eq!(payload["action_items"].as_array().unwrap().len(), 3,
+            "all three non-info findings must appear as action_items");
     }
 
     #[test]
@@ -1631,23 +1234,15 @@ mod tests {
             workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
-        report.layers = vec![make_layer(
-            "logic",
-            "cargo-test",
-            vec![
-                make_finding(Severity::Info, "TESTS_PASSED"),
-                make_finding(Severity::High, "MUTATION_SURVIVED"),
-            ],
-        )];
+        report.layers = vec![make_layer("logic", "cargo-test", vec![
+            make_finding(Severity::Info, "TESTS_PASSED"),
+            make_finding(Severity::High, "MUTATION_SURVIVED"),
+        ])];
         report.status = ReportStatus::Partial;
 
         let payload = build_run_data(&report);
         let items = payload["action_items"].as_array().unwrap();
-        assert_eq!(
-            items.len(),
-            1,
-            "only the High finding must appear; Info must be excluded"
-        );
+        assert_eq!(items.len(), 1, "only the High finding must appear; Info must be excluded");
         assert_eq!(items[0]["code"].as_str(), Some("MUTATION_SURVIVED"));
     }
 
@@ -1667,14 +1262,8 @@ mod tests {
         let payload = build_run_data(&report);
 
         assert_run_payload_required_keys(&payload);
-        assert!(
-            payload.get("is_workspace").is_none(),
-            "Single must not emit is_workspace"
-        );
-        assert!(
-            payload.get("packages").is_none(),
-            "Single must not emit packages"
-        );
+        assert!(payload.get("is_workspace").is_none(), "Single must not emit is_workspace");
+        assert!(payload.get("packages").is_none(),     "Single must not emit packages");
     }
 
     #[test]
@@ -1683,10 +1272,7 @@ mod tests {
 
         assert_run_payload_required_keys(&payload);
         assert_eq!(payload["is_workspace"].as_bool(), Some(true));
-        assert!(
-            payload["packages"].is_array(),
-            "workspace payload must include packages array"
-        );
+        assert!(payload["packages"].is_array(), "workspace payload must include packages array");
     }
 
     // ── global cross-package priority order ────────────────────────────────────
@@ -1711,83 +1297,44 @@ mod tests {
                 package_path: "pkg-a".to_string(),
                 language: "rust".to_string(),
                 status: ReportStatus::Partial,
-                layers: vec![make_layer(
-                    "structural",
-                    "mutants",
-                    vec![make_finding(Severity::Medium, "MUTANT_SURVIVED")],
-                )],
-                summary: Summary {
-                    total_findings: 1,
-                    critical: 0,
-                    high: 0,
-                    medium: 1,
-                    low: 0,
-                    overall_status: ReportStatus::Partial,
-                },
+                layers: vec![make_layer("structural", "mutants", vec![
+                    make_finding(Severity::Medium, "MUTANT_SURVIVED"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 0, high: 0, medium: 1, low: 0,
+                    overall_status: ReportStatus::Partial },
             },
             WorkspaceMemberReport {
                 package_path: "pkg-b".to_string(),
                 language: "typescript".to_string(),
                 status: ReportStatus::Fail,
-                layers: vec![make_layer(
-                    "hostile",
-                    "semgrep",
-                    vec![make_finding(Severity::Critical, "HARDCODED_SECRET")],
-                )],
-                summary: Summary {
-                    total_findings: 1,
-                    critical: 1,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Fail,
-                },
+                layers: vec![make_layer("hostile", "semgrep", vec![
+                    make_finding(Severity::Critical, "HARDCODED_SECRET"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 1, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Fail },
             },
             WorkspaceMemberReport {
                 package_path: "pkg-c".to_string(),
                 language: "python".to_string(),
                 status: ReportStatus::Partial,
-                layers: vec![make_layer(
-                    "logic",
-                    "pytest",
-                    vec![make_finding(Severity::High, "TEST_FAILURE")],
-                )],
-                summary: Summary {
-                    total_findings: 1,
-                    critical: 0,
-                    high: 1,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Partial,
-                },
+                layers: vec![make_layer("logic", "pytest", vec![
+                    make_finding(Severity::High, "TEST_FAILURE"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 0, high: 1, medium: 0, low: 0,
+                    overall_status: ReportStatus::Partial },
             },
         ];
-        report.layers = report
-            .workspace_members
-            .iter()
-            .flat_map(|m| m.layers.clone())
-            .collect();
+        report.layers = report.workspace_members.iter()
+            .flat_map(|m| m.layers.clone()).collect();
 
         let payload = build_run_data(&report);
         assert_action_items_contract(&payload);
 
         let items = payload["action_items"].as_array().unwrap();
         assert_eq!(items.len(), 3);
-        assert_eq!(
-            items[0]["code"].as_str(),
-            Some("HARDCODED_SECRET"),
-            "Critical must be first"
-        );
-        assert_eq!(
-            items[1]["code"].as_str(),
-            Some("TEST_FAILURE"),
-            "High must be second"
-        );
-        assert_eq!(
-            items[2]["code"].as_str(),
-            Some("MUTANT_SURVIVED"),
-            "Medium must be last"
-        );
+        assert_eq!(items[0]["code"].as_str(), Some("HARDCODED_SECRET"), "Critical must be first");
+        assert_eq!(items[1]["code"].as_str(), Some("TEST_FAILURE"),      "High must be second");
+        assert_eq!(items[2]["code"].as_str(), Some("MUTANT_SURVIVED"),   "Medium must be last");
         // Verify package_path is preserved after reordering
         assert_eq!(items[0]["package_path"].as_str(), Some("pkg-b"));
         assert_eq!(items[1]["package_path"].as_str(), Some("pkg-c"));
@@ -1806,11 +1353,9 @@ mod tests {
             workspace_root: None,
         };
         let mut report = BarzelReport::new(project);
-        report.add_layer(make_layer(
-            "hostile",
-            "semgrep",
-            vec![make_finding(Severity::High, "SQL_INJECT")],
-        ));
+        report.add_layer(make_layer("hostile", "semgrep", vec![
+            make_finding(Severity::High, "SQL_INJECT"),
+        ]));
         report.save(dir.path()).unwrap();
         report
     }
@@ -1822,15 +1367,9 @@ mod tests {
 
         let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), None, None).unwrap();
         let report_json = &payload["report"];
-        assert_eq!(
-            report_json["id"].as_str(),
-            Some(saved.id.as_str()),
-            "data.report.id must match the saved report's id"
-        );
-        assert_eq!(
-            report_json["project"]["package_name"].as_str(),
-            Some("myapp")
-        );
+        assert_eq!(report_json["id"].as_str(), Some(saved.id.as_str()),
+            "data.report.id must match the saved report's id");
+        assert_eq!(report_json["project"]["package_name"].as_str(), Some("myapp"));
     }
 
     #[test]
@@ -1839,8 +1378,7 @@ mod tests {
         let saved = saved_report(&dir);
         let prefix = &saved.id[..8];
 
-        let payload =
-            build_stdio_report_payload(dir.path().to_str().unwrap(), Some(prefix), None).unwrap();
+        let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), Some(prefix), None).unwrap();
         assert_eq!(payload["report"]["id"].as_str(), Some(saved.id.as_str()));
     }
 
@@ -1849,8 +1387,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let saved = saved_report(&dir);
 
-        let payload =
-            build_stdio_report_payload(dir.path().to_str().unwrap(), Some("latest"), None).unwrap();
+        let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), Some("latest"), None).unwrap();
         assert_eq!(payload["report"]["id"].as_str(), Some(saved.id.as_str()));
     }
 
@@ -1861,18 +1398,15 @@ mod tests {
         let result = build_stdio_report_payload(dir.path().to_str().unwrap(), None, None);
         assert!(result.is_err(), "missing report must return Err");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("not found") || msg.contains("latest"),
-            "error message must reference what was not found: {msg}"
-        );
+        assert!(msg.contains("not found") || msg.contains("latest"),
+            "error message must reference what was not found: {msg}");
     }
 
     #[test]
     fn stdio_report_unknown_id_returns_err() {
         let dir = tempfile::tempdir().unwrap();
         let _ = saved_report(&dir);
-        let result =
-            build_stdio_report_payload(dir.path().to_str().unwrap(), Some("nonexistent"), None);
+        let result = build_stdio_report_payload(dir.path().to_str().unwrap(), Some("nonexistent"), None);
         assert!(result.is_err(), "unknown report id must return Err");
     }
 
@@ -1899,36 +1433,24 @@ mod tests {
 
         // head: new High finding → regression
         let mut head_report = BarzelReport::new(project());
-        head_report.add_layer(make_layer(
-            "hostile",
-            "semgrep",
-            vec![make_finding(Severity::High, "VULN_NEW")],
-        ));
+        head_report.add_layer(make_layer("hostile", "semgrep", vec![
+            make_finding(Severity::High, "VULN_NEW"),
+        ]));
         head_report.save(dir.path()).unwrap();
         let head_id = head_report.id.clone();
 
         let refs = vec![baseline_id[..8].to_string(), head_id[..8].to_string()];
-        let payload =
-            build_stdio_report_payload(dir.path().to_str().unwrap(), None, Some(&refs)).unwrap();
+        let payload = build_stdio_report_payload(
+            dir.path().to_str().unwrap(), None, Some(&refs),
+        ).unwrap();
 
         let cmp = &payload["comparison"];
-        assert_eq!(
-            cmp["verdict"].as_str(),
-            Some("regressed"),
-            "new High finding in head must produce verdict=regressed"
-        );
-        assert_eq!(
-            cmp["summary_delta"]["high"].as_i64(),
-            Some(1),
-            "high must increase by 1 from baseline to head"
-        );
-        assert!(
-            cmp["regressions"]
-                .as_array()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false),
-            "regressions must be non-empty"
-        );
+        assert_eq!(cmp["verdict"].as_str(), Some("regressed"),
+            "new High finding in head must produce verdict=regressed");
+        assert_eq!(cmp["summary_delta"]["high"].as_i64(), Some(1),
+            "high must increase by 1 from baseline to head");
+        assert!(cmp["regressions"].as_array().map(|v| !v.is_empty()).unwrap_or(false),
+            "regressions must be non-empty");
     }
 
     #[test]
@@ -1938,9 +1460,6 @@ mod tests {
         let result = build_stdio_report_payload(dir.path().to_str().unwrap(), None, Some(&refs));
         assert!(result.is_err(), "single-element compare must return Err");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("2"),
-            "error must mention expected count of 2: {msg}"
-        );
+        assert!(msg.contains("2"), "error must mention expected count of 2: {msg}");
     }
 }

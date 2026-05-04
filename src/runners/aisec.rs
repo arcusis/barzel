@@ -22,9 +22,7 @@ pub struct AiSecRunner {
 
 impl Default for AiSecRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -44,8 +42,7 @@ const AI_SEC_PATTERNS: &[AiSecPattern] = &[
         pattern: "sk-",
         severity: Severity::Critical,
         message: "Possible hardcoded OpenAI API key (sk- prefix)",
-        suggestion:
-            "Move API keys to environment variables. Use `os.environ['OPENAI_API_KEY']` or dotenv.",
+        suggestion: "Move API keys to environment variables. Use `os.environ['OPENAI_API_KEY']` or dotenv.",
         file_extensions: &[".py", ".ts", ".js", ".go", ".rs"],
     },
     AiSecPattern {
@@ -53,8 +50,7 @@ const AI_SEC_PATTERNS: &[AiSecPattern] = &[
         pattern: "sk-ant-",
         severity: Severity::Critical,
         message: "Possible hardcoded Anthropic API key (sk-ant- prefix)",
-        suggestion:
-            "Move API keys to environment variables. Never commit API keys to source control.",
+        suggestion: "Move API keys to environment variables. Never commit API keys to source control.",
         file_extensions: &[".py", ".ts", ".js", ".go", ".rs"],
     },
     AiSecPattern {
@@ -89,8 +85,7 @@ const AI_SEC_PATTERNS: &[AiSecPattern] = &[
         pattern: "exec(",
         severity: Severity::Critical,
         message: "`exec()` detected — executing LLM-generated code is a critical security risk",
-        suggestion:
-            "Use a sandboxed execution environment (e.g., subprocess with restricted permissions).",
+        suggestion: "Use a sandboxed execution environment (e.g., subprocess with restricted permissions).",
         file_extensions: &[".py"],
     },
     AiSecPattern {
@@ -113,12 +108,8 @@ const AI_SEC_PATTERNS: &[AiSecPattern] = &[
 ];
 
 impl TestRunner for AiSecRunner {
-    fn name(&self) -> &'static str {
-        "ai-sec"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Hostile
-    }
+    fn name(&self) -> &'static str { "ai-sec" }
+    fn layer(&self) -> Layer { Layer::Hostile }
 
     fn skip_message(&self) -> &'static str {
         "No AI framework detected — ai-sec scanner only runs when AI dependencies (openai, anthropic, langchain, etc.) are found"
@@ -174,15 +165,9 @@ impl TestRunner for AiSecRunner {
             });
         }
 
-        let status = if all_findings
-            .iter()
-            .any(|f| matches!(f.severity, Severity::Critical))
-        {
+        let status = if all_findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
             LayerStatus::Fail
-        } else if all_findings
-            .iter()
-            .any(|f| matches!(f.severity, Severity::High | Severity::Medium))
-        {
+        } else if all_findings.iter().any(|f| matches!(f.severity, Severity::High | Severity::Medium)) {
             LayerStatus::Partial
         } else {
             LayerStatus::Pass
@@ -206,20 +191,12 @@ fn scan_source_patterns(root: &Path) -> Vec<Finding> {
 }
 
 fn scan_dir(dir: &Path, findings: &mut Vec<Finding>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+    let Ok(entries) = std::fs::read_dir(dir) else { return; };
     for entry in entries.flatten() {
         let path = entry.path();
         // Skip common non-source dirs
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if matches!(
-            name.as_str(),
-            "node_modules" | ".git" | "target" | ".venv" | "__pycache__" | ".barzel"
-        ) {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if matches!(name.as_str(), "node_modules" | ".git" | "target" | ".venv" | "__pycache__" | ".barzel") {
             continue;
         }
         if path.is_dir() {
@@ -231,31 +208,19 @@ fn scan_dir(dir: &Path, findings: &mut Vec<Finding>) {
 }
 
 fn scan_file(path: &Path, findings: &mut Vec<Finding>) {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{}", e))
-        .unwrap_or_default();
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{}", e)).unwrap_or_default();
+    let Ok(content) = std::fs::read_to_string(path) else { return; };
 
     for pattern in AI_SEC_PATTERNS {
-        if !pattern.file_extensions.contains(&ext.as_str()) {
-            continue;
-        }
-        if !content.contains(pattern.pattern) {
-            continue;
-        }
+        if !pattern.file_extensions.contains(&ext.as_str()) { continue; }
+        if !content.contains(pattern.pattern) { continue; }
 
         // Find the line number
         for (line_no, line) in content.lines().enumerate() {
             if line.contains(pattern.pattern) {
                 // Skip comments
                 let trimmed = line.trim();
-                if trimmed.starts_with('#') || trimmed.starts_with("//") {
-                    continue;
-                }
+                if trimmed.starts_with('#') || trimmed.starts_with("//") { continue; }
 
                 findings.push(Finding {
                     severity: pattern.severity,
@@ -283,52 +248,32 @@ fn parse_semgrep_for_ai(stdout: &str) -> Vec<Finding> {
         return vec![];
     };
 
-    results
-        .iter()
-        .map(|item| {
-            let severity = item
-                .get("extra")
-                .and_then(|e| e.get("severity"))
-                .and_then(|s| s.as_str())
-                .map(|s| match s.to_uppercase().as_str() {
-                    "ERROR" => Severity::Critical,
-                    "WARNING" => Severity::High,
-                    _ => Severity::Medium,
-                })
-                .unwrap_or(Severity::Medium);
+    results.iter().map(|item| {
+        let severity = item
+            .get("extra").and_then(|e| e.get("severity")).and_then(|s| s.as_str())
+            .map(|s| match s.to_uppercase().as_str() {
+                "ERROR" => Severity::Critical,
+                "WARNING" => Severity::High,
+                _ => Severity::Medium,
+            })
+            .unwrap_or(Severity::Medium);
 
-            let code = item
-                .get("check_id")
-                .and_then(|c| c.as_str())
-                .unwrap_or("AI_SEC")
-                .to_string();
-            Finding {
-                severity,
-                code: code.clone(),
-                message: item
-                    .get("extra")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("AI security issue")
-                    .to_string(),
-                location: item.get("path").and_then(|p| p.as_str()).map(|p| {
-                    let line = item
-                        .get("start")
-                        .and_then(|s| s.get("line"))
-                        .and_then(|l| l.as_u64())
-                        .unwrap_or(0);
-                    format!("{}:{}", p, line)
-                }),
-                reproduce_cmd: item
-                    .get("path")
-                    .and_then(|p| p.as_str())
-                    .map(|p| format!("semgrep --config={} {} 2>&1 | head -20", code, p)),
-                suggestion: Some(
-                    "Review the flagged code for AI-specific security risks.".to_string(),
-                ),
-            }
-        })
-        .collect()
+        let code = item.get("check_id").and_then(|c| c.as_str()).unwrap_or("AI_SEC").to_string();
+        Finding {
+            severity,
+            code: code.clone(),
+            message: item.get("extra").and_then(|e| e.get("message")).and_then(|m| m.as_str())
+                .unwrap_or("AI security issue").to_string(),
+            location: item.get("path").and_then(|p| p.as_str()).map(|p| {
+                let line = item.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                format!("{}:{}", p, line)
+            }),
+            reproduce_cmd: item.get("path").and_then(|p| p.as_str()).map(|p| {
+                format!("semgrep --config={} {} 2>&1 | head -20", code, p)
+            }),
+            suggestion: Some("Review the flagged code for AI-specific security risks.".to_string()),
+        }
+    }).collect()
 }
 
 #[cfg(test)]
@@ -365,14 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn name_is_ai_sec() {
-        assert_eq!(AiSecRunner::default().name(), "ai-sec");
-    }
+    fn name_is_ai_sec() { assert_eq!(AiSecRunner::default().name(), "ai-sec"); }
 
     #[test]
-    fn layer_is_hostile() {
-        assert!(matches!(AiSecRunner::default().layer(), Layer::Hostile));
-    }
+    fn layer_is_hostile() { assert!(matches!(AiSecRunner::default().layer(), Layer::Hostile)); }
 
     #[test]
     fn not_available_without_ai_deps() {
@@ -387,29 +328,16 @@ mod tests {
     #[test]
     fn detects_hardcoded_api_key_in_python_file() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("app.py"),
-            b"api_key = \"sk-1234567890abcdef\"",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("app.py"), b"api_key = \"sk-1234567890abcdef\"").unwrap();
 
         let mut info = ai_project();
         info.root = dir.path().to_string_lossy().to_string();
 
-        let r = AiSecRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let r = AiSecRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         let result = r.run(&info).unwrap();
 
-        assert!(result
-            .findings
-            .iter()
-            .any(|f| f.code == "HARDCODED_API_KEY"));
-        let finding = result
-            .findings
-            .iter()
-            .find(|f| f.code == "HARDCODED_API_KEY")
-            .unwrap();
+        assert!(result.findings.iter().any(|f| f.code == "HARDCODED_API_KEY"));
+        let finding = result.findings.iter().find(|f| f.code == "HARDCODED_API_KEY").unwrap();
         assert_eq!(finding.severity, Severity::Critical);
         assert!(finding.location.is_some());
     }
@@ -422,9 +350,7 @@ mod tests {
         let mut info = ai_project();
         info.root = dir.path().to_string_lossy().to_string();
 
-        let r = AiSecRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let r = AiSecRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         let result = r.run(&info).unwrap();
 
         assert!(result.findings.iter().any(|f| f.code == "EVAL_LLM_OUTPUT"));
@@ -433,24 +359,15 @@ mod tests {
     #[test]
     fn skips_commented_lines() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("test.py"),
-            b"# api_key = \"sk-example\"\nlegit = 1",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("test.py"), b"# api_key = \"sk-example\"\nlegit = 1").unwrap();
 
         let mut info = ai_project();
         info.root = dir.path().to_string_lossy().to_string();
 
-        let r = AiSecRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let r = AiSecRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         let result = r.run(&info).unwrap();
 
-        assert!(!result
-            .findings
-            .iter()
-            .any(|f| f.code == "HARDCODED_API_KEY"));
+        assert!(!result.findings.iter().any(|f| f.code == "HARDCODED_API_KEY"));
     }
 
     #[test]
@@ -461,9 +378,7 @@ mod tests {
         let mut info = ai_project();
         info.root = dir.path().to_string_lossy().to_string();
 
-        let r = AiSecRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let r = AiSecRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         let result = r.run(&info).unwrap();
 
         assert!(result.findings.iter().any(|f| f.code == "AI_SEC_PASSED"));
@@ -473,9 +388,7 @@ mod tests {
     #[test]
     fn parse_pytest_output_parses_passed() {
         let (p, f, e) = crate::runners::pytest::parse_pytest_output("5 passed in 0.45s");
-        assert_eq!(p, 5);
-        assert_eq!(f, 0);
-        assert_eq!(e, 0);
+        assert_eq!(p, 5); assert_eq!(f, 0); assert_eq!(e, 0);
     }
 
     #[test]
@@ -493,10 +406,7 @@ mod tests {
         }"#;
         let findings = parse_semgrep_for_ai(stdout);
         assert_eq!(findings.len(), 1);
-        assert!(
-            findings[0].reproduce_cmd.is_some(),
-            "semgrep finding must have reproduce_cmd"
-        );
+        assert!(findings[0].reproduce_cmd.is_some(), "semgrep finding must have reproduce_cmd");
         let cmd = findings[0].reproduce_cmd.as_ref().unwrap();
         assert!(cmd.contains("python.secrets.hardcoded-api-key"));
         assert!(cmd.contains("src/app.py"));

@@ -50,10 +50,7 @@ pub fn entries_from_report(report: &BarzelReport) -> Vec<HistoryEntry> {
         vec![HistoryEntry {
             report_id: report.id.clone(),
             timestamp: report.timestamp,
-            project: report
-                .project
-                .package_name
-                .clone()
+            project: report.project.package_name.clone()
                 .unwrap_or_else(|| report.project.language.to_string()),
             package_path: None,
             language: report.project.language.to_string(),
@@ -62,50 +59,36 @@ pub fn entries_from_report(report: &BarzelReport) -> Vec<HistoryEntry> {
         }]
     } else {
         // Workspace path: use per-member layers, not aggregate
-        report
-            .workspace_members
-            .iter()
-            .filter_map(|member| {
-                let layers = metric_layers(&member.layers);
-                if layers.is_empty() {
-                    return None;
-                }
-                Some(HistoryEntry {
-                    report_id: report.id.clone(),
-                    timestamp: report.timestamp,
-                    project: report
-                        .project
-                        .package_name
-                        .clone()
-                        .unwrap_or_else(|| "workspace".to_string()),
-                    package_path: Some(member.package_path.clone()),
-                    language: member.language.clone(),
-                    status: member.status,
-                    layers,
-                })
+        report.workspace_members.iter().filter_map(|member| {
+            let layers = metric_layers(&member.layers);
+            if layers.is_empty() { return None; }
+            Some(HistoryEntry {
+                report_id: report.id.clone(),
+                timestamp: report.timestamp,
+                project: report.project.package_name.clone()
+                    .unwrap_or_else(|| "workspace".to_string()),
+                package_path: Some(member.package_path.clone()),
+                language: member.language.clone(),
+                status: member.status,
+                layers,
             })
-            .collect()
+        }).collect()
     }
 }
 
 /// Extract layers that carry at least one non-null metric.
 fn metric_layers(layers: &[crate::report::LayerResult]) -> Vec<HistoryLayerMetric> {
-    layers
-        .iter()
-        .filter_map(|l| {
-            let ms = l.metrics.mutation_score;
-            let cov = l.metrics.coverage;
-            if ms.is_none() && cov.is_none() {
-                return None;
-            }
-            Some(HistoryLayerMetric {
-                runner: l.runner.clone(),
-                status: l.status,
-                mutation_score: ms,
-                coverage: cov,
-            })
+    layers.iter().filter_map(|l| {
+        let ms = l.metrics.mutation_score;
+        let cov = l.metrics.coverage;
+        if ms.is_none() && cov.is_none() { return None; }
+        Some(HistoryLayerMetric {
+            runner: l.runner.clone(),
+            status: l.status,
+            mutation_score: ms,
+            coverage: cov,
         })
-        .collect()
+    }).collect()
 }
 
 /// Persist a history entry under `{project_root}/.barzel/history/`.
@@ -124,7 +107,8 @@ pub fn save_entry(entry: &HistoryEntry, project_root: &Path) -> std::io::Result<
     // Use the full report_id (sanitized) so two IDs sharing the same 8-char prefix
     // never collide. Append a short stable hash of the raw suffix so workspace members
     // that sanitize to the same string (e.g. "apps/web" vs "apps_web") remain distinct.
-    let raw_suffix = entry.package_path.as_deref().unwrap_or(&entry.language);
+    let raw_suffix = entry.package_path.as_deref()
+        .unwrap_or(&entry.language);
     let safe_suffix = sanitize(raw_suffix);
     let suffix_hash = hash8(raw_suffix);
     let safe_id = sanitize(&entry.report_id);
@@ -161,26 +145,21 @@ pub fn save_from_report(
 /// left in place rather than deleted.
 /// `max_entries = 0` is a no-op (keep all entries).
 pub fn prune_history(project_root: &Path, max_entries: usize) -> std::io::Result<()> {
-    if max_entries == 0 {
-        return Ok(());
-    }
+    if max_entries == 0 { return Ok(()); }
     let history_dir = project_root.join(".barzel").join("history");
-    if !history_dir.exists() {
-        return Ok(());
-    }
+    if !history_dir.exists() { return Ok(()); }
 
     // Read all valid entries paired with their file path.
-    let mut entries_with_paths: Vec<(HistoryEntry, std::path::PathBuf)> =
-        std::fs::read_dir(&history_dir)?
-            .flatten()
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-            .filter_map(|e| {
-                let path = e.path();
-                let content = std::fs::read_to_string(&path).ok()?;
-                let entry: HistoryEntry = serde_json::from_str(&content).ok()?;
-                Some((entry, path))
-            })
-            .collect();
+    let mut entries_with_paths: Vec<(HistoryEntry, std::path::PathBuf)> = std::fs::read_dir(&history_dir)?
+        .flatten()
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .filter_map(|e| {
+            let path = e.path();
+            let content = std::fs::read_to_string(&path).ok()?;
+            let entry: HistoryEntry = serde_json::from_str(&content).ok()?;
+            Some((entry, path))
+        })
+        .collect();
 
     // Sort ascending by timestamp so oldest are first.
     entries_with_paths.sort_by_key(|(e, _)| e.timestamp);
@@ -218,14 +197,10 @@ pub fn annotate_metric_regressions(
     project_root: &Path,
     cfg: &HistoryConfig,
 ) {
-    if !cfg.enabled {
-        return;
-    }
+    if !cfg.enabled { return; }
 
     let history = load_history_entries(project_root);
-    if history.is_empty() {
-        return;
-    }
+    if history.is_empty() { return; }
 
     let cfg = cfg.normalized();
 
@@ -236,7 +211,9 @@ pub fn annotate_metric_regressions(
         let language = report.project.language.to_string();
 
         for layer in &mut report.layers {
-            let injected = regression_findings_for_layer(layer, &history, None, &language, &cfg);
+            let injected = regression_findings_for_layer(
+                layer, &history, None, &language, &cfg,
+            );
             if !injected.is_empty() {
                 layer.findings.extend(injected);
                 if matches!(layer.status, LayerStatus::Pass) {
@@ -255,11 +232,7 @@ pub fn annotate_metric_regressions(
 
             for layer in &mut member.layers {
                 let injected = regression_findings_for_layer(
-                    layer,
-                    &history,
-                    Some(&package_path),
-                    &language,
-                    &cfg,
+                    layer, &history, Some(&package_path), &language, &cfg,
                 );
                 if !injected.is_empty() {
                     layer.findings.extend(injected);
@@ -274,11 +247,7 @@ pub fn annotate_metric_regressions(
             // Recompute per-member summary and status after injection.
             if member_injected {
                 let mut s = crate::report::Summary {
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
+                    total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
                     overall_status: ReportStatus::Pass,
                 };
                 for layer in &member.layers {
@@ -286,10 +255,10 @@ pub fn annotate_metric_regressions(
                         s.total_findings += 1;
                         match f.severity {
                             Severity::Critical => s.critical += 1,
-                            Severity::High => s.high += 1,
-                            Severity::Medium => s.medium += 1,
-                            Severity::Low => s.low += 1,
-                            Severity::Info => {}
+                            Severity::High     => s.high += 1,
+                            Severity::Medium   => s.medium += 1,
+                            Severity::Low      => s.low += 1,
+                            Severity::Info     => {}
                         }
                     }
                 }
@@ -307,9 +276,7 @@ pub fn annotate_metric_regressions(
 
         // Rebuild aggregate layers from updated members and recompute aggregate summary.
         if any_injected {
-            report.layers = report
-                .workspace_members
-                .iter()
+            report.layers = report.workspace_members.iter()
                 .flat_map(|m| m.layers.clone())
                 .collect();
         }
@@ -333,17 +300,16 @@ fn regression_findings_for_layer(
 ) -> Vec<Finding> {
     let ms = layer.metrics.mutation_score;
     let cov = layer.metrics.coverage;
-    if ms.is_none() && cov.is_none() {
-        return vec![];
-    }
+    if ms.is_none() && cov.is_none() { return vec![]; }
 
     // History is sorted ascending; scan in reverse so the first match is the most recent.
     // Matching key: (package_path, language, runner) — project name is metadata only
     // and is intentionally excluded so renames do not break the baseline.
-    let prior_layer = match history
-        .iter()
-        .rev()
-        .filter(|e| e.package_path.as_deref() == package_path && e.language == language)
+    let prior_layer = match history.iter().rev()
+        .filter(|e| {
+            e.package_path.as_deref() == package_path
+                && e.language == language
+        })
         .find_map(|e| e.layers.iter().find(|l| l.runner == layer.runner))
     {
         Some(p) => p,
@@ -362,17 +328,14 @@ fn regression_findings_for_layer(
                 code: "COVERAGE_REGRESSION".to_string(),
                 message: format!(
                     "Coverage dropped from {:.1}% to {:.1}% (−{:.1} pp, runner: {})",
-                    prior * 100.0,
-                    current * 100.0,
-                    drop * 100.0,
-                    layer.runner
+                    prior * 100.0, current * 100.0, drop * 100.0, layer.runner
                 ),
                 location: None,
                 reproduce_cmd: Some(reproduce.clone()),
                 suggestion: Some(
                     "Inspect recently changed code for untested branches and rerun the test suite \
                      with coverage reporting enabled."
-                        .to_string(),
+                    .to_string(),
                 ),
             });
         }
@@ -387,17 +350,14 @@ fn regression_findings_for_layer(
                 code: "MUTATION_SCORE_REGRESSION".to_string(),
                 message: format!(
                     "Mutation score dropped from {:.1}% to {:.1}% (−{:.1} pp, runner: {})",
-                    prior * 100.0,
-                    current * 100.0,
-                    drop * 100.0,
-                    layer.runner
+                    prior * 100.0, current * 100.0, drop * 100.0, layer.runner
                 ),
                 location: None,
                 reproduce_cmd: Some(reproduce),
                 suggestion: Some(
                     "Inspect recently changed code for surviving mutants and add targeted tests. \
                      Rerun the mutation runner to confirm improvement."
-                        .to_string(),
+                    .to_string(),
                 ),
             });
         }
@@ -409,15 +369,8 @@ fn regression_findings_for_layer(
 /// Return the reproduce_cmd from the first non-regression finding in the layer,
 /// falling back to `fallback` if none exists.
 fn best_reproduce_cmd(layer: &LayerResult, fallback: &str) -> String {
-    layer
-        .findings
-        .iter()
-        .filter(|f| {
-            !matches!(
-                f.code.as_str(),
-                "COVERAGE_REGRESSION" | "MUTATION_SCORE_REGRESSION"
-            )
-        })
+    layer.findings.iter()
+        .filter(|f| !matches!(f.code.as_str(), "COVERAGE_REGRESSION" | "MUTATION_SCORE_REGRESSION"))
         .find_map(|f| f.reproduce_cmd.clone())
         .unwrap_or_else(|| fallback.to_string())
 }
@@ -449,13 +402,7 @@ pub fn load_history_entries(project_root: &Path) -> Vec<HistoryEntry> {
 /// Mirrors the helper in cache.rs to keep filenames safe across platforms.
 fn sanitize(name: &str) -> String {
     name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
         .collect()
 }
 
@@ -474,10 +421,10 @@ fn hash8(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::{Language, ProjectFrameworks, ProjectInfo};
+    use crate::detect::{Language, ProjectInfo, ProjectFrameworks};
     use crate::report::{
-        BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, ReportStatus, Severity,
-        Summary, WorkspaceMemberReport,
+        BarzelReport, Finding, LayerMetrics, LayerResult, LayerStatus, ReportStatus,
+        Severity, Summary, WorkspaceMemberReport,
     };
     use tempfile::tempdir;
 
@@ -494,11 +441,7 @@ mod tests {
         }
     }
 
-    fn layer_with_metrics(
-        runner: &str,
-        mutation_score: Option<f64>,
-        coverage: Option<f64>,
-    ) -> LayerResult {
+    fn layer_with_metrics(runner: &str, mutation_score: Option<f64>, coverage: Option<f64>) -> LayerResult {
         LayerResult {
             name: "logic".to_string(),
             runner: runner.to_string(),
@@ -511,11 +454,7 @@ mod tests {
                 reproduce_cmd: Some("pytest".to_string()),
                 suggestion: None,
             }],
-            metrics: LayerMetrics {
-                mutation_score,
-                coverage,
-                ..Default::default()
-            },
+            metrics: LayerMetrics { mutation_score, coverage, ..Default::default() },
             duration_ms: 100,
         }
     }
@@ -562,14 +501,8 @@ mod tests {
                 language: "rust".to_string(),
                 status: ReportStatus::Pass,
                 layers: vec![layer_with_metrics("cargo mutants", Some(0.84), None)],
-                summary: Summary {
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Pass,
-                },
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
             },
             WorkspaceMemberReport {
                 package_path: "apps/web".to_string(),
@@ -579,14 +512,8 @@ mod tests {
                     layer_with_metrics("stryker", Some(0.72), None),
                     layer_no_metrics("eslint"),
                 ],
-                summary: Summary {
-                    total_findings: 1,
-                    critical: 0,
-                    high: 1,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Partial,
-                },
+                summary: Summary { total_findings: 1, critical: 0, high: 1, medium: 0, low: 0,
+                    overall_status: ReportStatus::Partial },
             },
             WorkspaceMemberReport {
                 package_path: "libs/shared".to_string(),
@@ -594,14 +521,8 @@ mod tests {
                 status: ReportStatus::Pass,
                 // No metric layers — this member must be excluded
                 layers: vec![layer_no_metrics("tsc")],
-                summary: Summary {
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Pass,
-                },
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
             },
         ];
         r
@@ -674,10 +595,7 @@ mod tests {
     fn single_project_with_no_metrics_produces_no_entries() {
         let report = single_report_no_metrics();
         let entries = entries_from_report(&report);
-        assert!(
-            entries.is_empty(),
-            "zero-metric report must produce no history entries"
-        );
+        assert!(entries.is_empty(), "zero-metric report must produce no history entries");
     }
 
     #[test]
@@ -687,26 +605,20 @@ mod tests {
 
         assert_eq!(entries.len(), 2, "two of three members have metric layers");
 
-        let api = entries
-            .iter()
-            .find(|e| e.package_path.as_deref() == Some("crates/api"))
+        let api = entries.iter().find(|e| e.package_path.as_deref() == Some("crates/api"))
             .expect("crates/api entry must be present");
         assert_eq!(api.layers[0].runner, "cargo mutants");
         assert_eq!(api.layers[0].mutation_score, Some(0.84));
         assert_eq!(api.language, "rust");
 
-        let web = entries
-            .iter()
-            .find(|e| e.package_path.as_deref() == Some("apps/web"))
+        let web = entries.iter().find(|e| e.package_path.as_deref() == Some("apps/web"))
             .expect("apps/web entry must be present");
         assert_eq!(web.layers.len(), 1, "only stryker has metrics in apps/web");
         assert_eq!(web.layers[0].mutation_score, Some(0.72));
         assert_eq!(web.status, ReportStatus::Partial);
 
-        assert!(
-            entries.iter().all(|e| e.report_id == report.id),
-            "all entries must reference the same report_id"
-        );
+        assert!(entries.iter().all(|e| e.report_id == report.id),
+            "all entries must reference the same report_id");
     }
 
     #[test]
@@ -714,9 +626,7 @@ mod tests {
         let report = workspace_report();
         let entries = entries_from_report(&report);
         assert!(
-            entries
-                .iter()
-                .all(|e| e.package_path.as_deref() != Some("libs/shared")),
+            entries.iter().all(|e| e.package_path.as_deref() != Some("libs/shared")),
             "libs/shared has no metric layers and must not appear in history"
         );
     }
@@ -741,10 +651,7 @@ mod tests {
             duration_ms: 0,
         });
         let entries = entries_from_report(&r);
-        assert!(
-            entries.is_empty(),
-            "diff-skip report must produce no history entries"
-        );
+        assert!(entries.is_empty(), "diff-skip report must produce no history entries");
     }
 
     // ── save / load ───────────────────────────────────────────────────────────
@@ -760,14 +667,12 @@ mod tests {
 
         let history_dir = dir.path().join(".barzel").join("history");
         assert!(history_dir.exists(), ".barzel/history/ must be created");
-        let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
+        let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
+            .flatten().collect();
         assert_eq!(files.len(), 1, "one file per entry");
         let name = files[0].file_name().to_string_lossy().to_string();
         assert!(name.ends_with(".json"), "file must have .json extension");
-        assert!(
-            name.contains(&report.id[..8]),
-            "filename must contain report id prefix"
-        );
+        assert!(name.contains(&report.id[..8]), "filename must contain report id prefix");
     }
 
     #[test]
@@ -777,10 +682,8 @@ mod tests {
         save_from_report(&report, dir.path(), &HistoryConfig::default()).unwrap();
 
         let history_dir = dir.path().join(".barzel").join("history");
-        let files: Vec<_> = std::fs::read_dir(&history_dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().to_string())
+        let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
+            .flatten().map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(files.len(), 2, "two metric-bearing members → two files");
         // filenames must be distinct
@@ -803,11 +706,7 @@ mod tests {
         std::fs::write(history_dir.join("corrupt.json"), b"not json {{").unwrap();
 
         let loaded = load_history_entries(dir.path());
-        assert_eq!(
-            loaded.len(),
-            1,
-            "corrupt file must be skipped; one valid entry returned"
-        );
+        assert_eq!(loaded.len(), 1, "corrupt file must be skipped; one valid entry returned");
     }
 
     #[test]
@@ -837,27 +736,13 @@ mod tests {
         // Write late first, then early — load must still sort ascending
         let history_dir = dir.path().join(".barzel").join("history");
         std::fs::create_dir_all(&history_dir).unwrap();
-        std::fs::write(
-            history_dir.join("late.json"),
-            serde_json::to_string(&late).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            history_dir.join("early.json"),
-            serde_json::to_string(&early).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(history_dir.join("late.json"),  serde_json::to_string(&late).unwrap()).unwrap();
+        std::fs::write(history_dir.join("early.json"), serde_json::to_string(&early).unwrap()).unwrap();
 
         let loaded = load_history_entries(dir.path());
         assert_eq!(loaded.len(), 2);
-        assert!(
-            loaded[0].timestamp <= loaded[1].timestamp,
-            "entries must be sorted ascending by timestamp"
-        );
-        assert_eq!(
-            loaded[0].report_id, "aaaa0001",
-            "earlier entry must be first"
-        );
+        assert!(loaded[0].timestamp <= loaded[1].timestamp, "entries must be sorted ascending by timestamp");
+        assert_eq!(loaded[0].report_id, "aaaa0001", "earlier entry must be first");
     }
 
     #[test]
@@ -885,15 +770,12 @@ mod tests {
         // Same 8-char prefix "abcd1234", different full id
         second.report_id = "abcd1234-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string();
 
-        save_entry(&first, dir.path()).unwrap();
+        save_entry(&first,  dir.path()).unwrap();
         save_entry(&second, dir.path()).unwrap();
 
         let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
-        assert_eq!(
-            files.len(),
-            2,
-            "two entries with IDs sharing the same 8-char prefix must produce two distinct files"
-        );
+        assert_eq!(files.len(), 2,
+            "two entries with IDs sharing the same 8-char prefix must produce two distinct files");
     }
 
     #[test]
@@ -926,11 +808,8 @@ mod tests {
         save_entry(&underscore_entry, dir.path()).unwrap();
 
         let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
-        assert_eq!(
-            files.len(),
-            2,
-            "apps/web and apps_web sanitize to the same string but must produce distinct files"
-        );
+        assert_eq!(files.len(), 2,
+            "apps/web and apps_web sanitize to the same string but must produce distinct files");
     }
 
     #[test]
@@ -943,19 +822,12 @@ mod tests {
         let report = single_report_with_coverage();
         let entries = entries_from_report(&report);
         let result = save_entry(&entries[0], dir.path());
-        assert!(
-            result.is_err(),
-            "save_entry must return Err when history dir cannot be created"
-        );
+        assert!(result.is_err(), "save_entry must return Err when history dir cannot be created");
     }
 
     // ── prune_history ─────────────────────────────────────────────────────────
 
-    fn make_history_entry(
-        package_path: Option<&str>,
-        language: &str,
-        hours_ago: i64,
-    ) -> HistoryEntry {
+    fn make_history_entry(package_path: Option<&str>, language: &str, hours_ago: i64) -> HistoryEntry {
         HistoryEntry {
             report_id: format!("id-{}-{}", package_path.unwrap_or("single"), hours_ago),
             timestamp: chrono::Utc::now() - chrono::Duration::hours(hours_ago),
@@ -984,8 +856,7 @@ mod tests {
             std::fs::write(
                 history_dir.join(format!("entry-{hours_ago}.json")),
                 serde_json::to_string(&e).unwrap(),
-            )
-            .unwrap();
+            ).unwrap();
         }
 
         prune_history(dir.path(), 3).unwrap();
@@ -993,18 +864,12 @@ mod tests {
         let remaining = load_history_entries(dir.path());
         assert_eq!(remaining.len(), 3, "only the 3 newest entries must remain");
         // Newest 3 are hours_ago = 1, 2, 3 (smallest = most recent)
-        let hours: Vec<i64> = remaining
-            .iter()
-            .map(|e| {
-                let now = chrono::Utc::now();
-                let delta = now - e.timestamp;
-                (delta.num_minutes() as f64 / 60.0).round() as i64
-            })
-            .collect();
-        assert!(
-            hours.iter().all(|&h| h <= 3),
-            "only entries from the last 3 hours must remain"
-        );
+        let hours: Vec<i64> = remaining.iter().map(|e| {
+            let now = chrono::Utc::now();
+            let delta = now - e.timestamp;
+            (delta.num_minutes() as f64 / 60.0).round() as i64
+        }).collect();
+        assert!(hours.iter().all(|&h| h <= 3), "only entries from the last 3 hours must remain");
     }
 
     #[test]
@@ -1018,35 +883,17 @@ mod tests {
         for hours_ago in [3, 2, 1] {
             let a = make_history_entry(Some("crates/api"), "rust", hours_ago);
             let b = make_history_entry(Some("apps/web"), "typescript", hours_ago);
-            std::fs::write(
-                history_dir.join(format!("a-{hours_ago}.json")),
-                serde_json::to_string(&a).unwrap(),
-            )
-            .unwrap();
-            std::fs::write(
-                history_dir.join(format!("b-{hours_ago}.json")),
-                serde_json::to_string(&b).unwrap(),
-            )
-            .unwrap();
+            std::fs::write(history_dir.join(format!("a-{hours_ago}.json")), serde_json::to_string(&a).unwrap()).unwrap();
+            std::fs::write(history_dir.join(format!("b-{hours_ago}.json")), serde_json::to_string(&b).unwrap()).unwrap();
         }
 
         prune_history(dir.path(), 2).unwrap();
 
         let remaining = load_history_entries(dir.path());
-        assert_eq!(
-            remaining.len(),
-            4,
-            "2 entries per package, 2 packages = 4 total"
-        );
+        assert_eq!(remaining.len(), 4, "2 entries per package, 2 packages = 4 total");
 
-        let api_count = remaining
-            .iter()
-            .filter(|e| e.package_path.as_deref() == Some("crates/api"))
-            .count();
-        let web_count = remaining
-            .iter()
-            .filter(|e| e.package_path.as_deref() == Some("apps/web"))
-            .count();
+        let api_count = remaining.iter().filter(|e| e.package_path.as_deref() == Some("crates/api")).count();
+        let web_count = remaining.iter().filter(|e| e.package_path.as_deref() == Some("apps/web")).count();
         assert_eq!(api_count, 2, "crates/api must retain 2 entries");
         assert_eq!(web_count, 2, "apps/web must retain 2 entries");
     }
@@ -1059,34 +906,20 @@ mod tests {
 
         for hours_ago in [3, 2, 1] {
             let e = make_history_entry(None, "python", hours_ago);
-            std::fs::write(
-                history_dir.join(format!("e-{hours_ago}.json")),
-                serde_json::to_string(&e).unwrap(),
-            )
-            .unwrap();
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
         }
 
         // prune_history(0) is a no-op inside the function itself — nothing deleted.
         prune_history(dir.path(), 0).unwrap();
-        assert_eq!(
-            load_history_entries(dir.path()).len(),
-            3,
-            "prune_history with max_entries=0 must be a no-op"
-        );
+        assert_eq!(load_history_entries(dir.path()).len(), 3,
+            "prune_history with max_entries=0 must be a no-op");
 
         // save_from_report with max_entries=0 also must not prune.
-        let cfg = HistoryConfig {
-            max_entries_per_package: 0,
-            ..HistoryConfig::default()
-        };
+        let cfg = HistoryConfig { max_entries_per_package: 0, ..HistoryConfig::default() };
         let report = single_report_with_coverage();
         save_from_report(&report, dir.path(), &cfg).unwrap();
         let remaining = load_history_entries(dir.path());
-        assert_eq!(
-            remaining.len(),
-            4,
-            "3 old + 1 new; no pruning with max_entries=0"
-        );
+        assert_eq!(remaining.len(), 4, "3 old + 1 new; no pruning with max_entries=0");
     }
 
     #[test]
@@ -1098,31 +931,19 @@ mod tests {
         // Write 2 valid entries and 1 corrupt file
         for hours_ago in [2, 1] {
             let e = make_history_entry(None, "python", hours_ago);
-            std::fs::write(
-                history_dir.join(format!("e-{hours_ago}.json")),
-                serde_json::to_string(&e).unwrap(),
-            )
-            .unwrap();
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
         }
         std::fs::write(history_dir.join("corrupt.json"), b"not json").unwrap();
 
         // limit=1: should delete the older valid entry, leave newest + corrupt intact
         prune_history(dir.path(), 1).unwrap();
 
-        let remaining_files: Vec<_> = std::fs::read_dir(&history_dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        assert!(
-            remaining_files.contains(&"corrupt.json".to_string()),
-            "invalid JSON files must not be deleted during pruning"
-        );
-        assert_eq!(
-            remaining_files.len(),
-            2,
-            "corrupt + 1 newest valid entry must remain"
-        );
+        let remaining_files: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
+            .flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(remaining_files.contains(&"corrupt.json".to_string()),
+            "invalid JSON files must not be deleted during pruning");
+        assert_eq!(remaining_files.len(), 2,
+            "corrupt + 1 newest valid entry must remain");
     }
 
     #[test]
@@ -1135,38 +956,22 @@ mod tests {
         let max = 3_usize;
         for hours_ago in [5, 4, 3] {
             let e = make_history_entry(None, "python", hours_ago);
-            std::fs::write(
-                history_dir.join(format!("old-{hours_ago}.json")),
-                serde_json::to_string(&e).unwrap(),
-            )
-            .unwrap();
+            std::fs::write(history_dir.join(format!("old-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
         }
 
         // Now save a new report — should add 1 and then prune back to max
-        let cfg = HistoryConfig {
-            max_entries_per_package: max,
-            ..HistoryConfig::default()
-        };
+        let cfg = HistoryConfig { max_entries_per_package: max, ..HistoryConfig::default() };
         let report = single_report_with_coverage();
         save_from_report(&report, dir.path(), &cfg).unwrap();
 
         let remaining = load_history_entries(dir.path());
-        assert_eq!(
-            remaining.len(),
-            max,
-            "after save + prune, exactly max_entries entries must remain"
-        );
+        assert_eq!(remaining.len(), max,
+            "after save + prune, exactly max_entries entries must remain");
         // The newest must be the one we just saved (smallest hours_ago)
-        assert!(
-            remaining
-                .last()
-                .map(|e| {
-                    let now = chrono::Utc::now();
-                    (now - e.timestamp).num_seconds() < 5
-                })
-                .unwrap_or(false),
-            "the newest entry must be the one just saved"
-        );
+        assert!(remaining.last().map(|e| {
+            let now = chrono::Utc::now();
+            (now - e.timestamp).num_seconds() < 5
+        }).unwrap_or(false), "the newest entry must be the one just saved");
     }
 
     #[test]
@@ -1179,27 +984,17 @@ mod tests {
         // Pre-populate 3 entries
         for hours_ago in [3, 2, 1] {
             let e = make_history_entry(None, "rust", hours_ago);
-            std::fs::write(
-                history_dir.join(format!("e-{hours_ago}.json")),
-                serde_json::to_string(&e).unwrap(),
-            )
-            .unwrap();
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
         }
 
         // A no-metrics (semgrep-only) report: save_from_report must write nothing and not prune.
-        let cfg = HistoryConfig {
-            max_entries_per_package: 1,
-            ..HistoryConfig::default()
-        };
+        let cfg = HistoryConfig { max_entries_per_package: 1, ..HistoryConfig::default() };
         let report = single_report_no_metrics();
         save_from_report(&report, dir.path(), &cfg).unwrap();
 
         // 3 entries must remain untouched — pruning only triggers when at least one was saved
-        assert_eq!(
-            load_history_entries(dir.path()).len(),
-            3,
-            "no-metrics report must not trigger pruning of existing history entries"
-        );
+        assert_eq!(load_history_entries(dir.path()).len(), 3,
+            "no-metrics report must not trigger pruning of existing history entries");
     }
 
     // ── annotate_metric_regressions ───────────────────────────────────────────
@@ -1263,12 +1058,9 @@ mod tests {
         // A negative tolerance must be clamped to 0.0, so an improvement is never flagged.
         let dir = tempdir().unwrap();
         let mut report = setup_single_regression(
-            &dir,
-            "pytest",
-            Some(0.80),
-            None, // prior
-            Some(0.90),
-            None, // current — improvement
+            &dir, "pytest",
+            Some(0.80), None, // prior
+            Some(0.90), None, // current — improvement
         );
         let cfg = HistoryConfig {
             enabled: true,
@@ -1277,14 +1069,9 @@ mod tests {
             ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
-        assert!(
-            !report
-                .layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "COVERAGE_REGRESSION"),
-            "negative tolerance must be clamped to 0.0; an improvement must not trigger a finding"
-        );
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "negative tolerance must be clamped to 0.0; an improvement must not trigger a finding");
     }
 
     #[test]
@@ -1292,12 +1079,9 @@ mod tests {
         // tolerance > 1.0 clamped to 1.0; real drops can never exceed 1.0, so no finding.
         let dir = tempdir().unwrap();
         let mut report = setup_single_regression(
-            &dir,
-            "pytest",
-            Some(0.90),
-            None,
-            Some(0.50),
-            None, // 40 pp drop — large but < 100 pp
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.50), None, // 40 pp drop — large but < 100 pp
         );
         let cfg = HistoryConfig {
             enabled: true,
@@ -1306,14 +1090,9 @@ mod tests {
             ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
-        assert!(
-            !report
-                .layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "COVERAGE_REGRESSION"),
-            "tolerance clamped to 1.0 must suppress all findings since drops never exceed 1.0"
-        );
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "tolerance clamped to 1.0 must suppress all findings since drops never exceed 1.0");
     }
 
     #[test]
@@ -1327,8 +1106,11 @@ mod tests {
         let exact_drop = prior - current; // whatever f64 computes for this subtraction
 
         let dir = tempdir().unwrap();
-        let mut report =
-            setup_single_regression(&dir, "pytest", Some(prior), None, Some(current), None);
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(prior), None,
+            Some(current), None,
+        );
         let cfg = HistoryConfig {
             enabled: true,
             coverage_regression_tolerance: exact_drop, // set tolerance == drop exactly
@@ -1336,14 +1118,9 @@ mod tests {
             ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
-        assert!(
-            !report
-                .layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "COVERAGE_REGRESSION"),
-            "drop exactly equal to tolerance must not emit a finding (strict > comparison)"
-        );
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "drop exactly equal to tolerance must not emit a finding (strict > comparison)");
     }
 
     #[test]
@@ -1383,10 +1160,7 @@ mod tests {
                 reproduce_cmd: Some("pytest".to_string()),
                 suggestion: None,
             }],
-            metrics: LayerMetrics {
-                coverage: Some(0.75),
-                ..Default::default()
-            },
+            metrics: LayerMetrics { coverage: Some(0.75), ..Default::default() },
             duration_ms: 0,
         });
 
@@ -1402,9 +1176,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut report = single_report_with_coverage();
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
-        let codes: Vec<_> = report
-            .layers
-            .iter()
+        let codes: Vec<_> = report.layers.iter()
             .flat_map(|l| &l.findings)
             .map(|f| f.code.as_str())
             .collect();
@@ -1416,78 +1188,55 @@ mod tests {
     fn coverage_drop_injects_finding_with_reproduce_cmd() {
         let dir = tempdir().unwrap();
         let mut report = setup_single_regression(
-            &dir,
-            "pytest",
-            Some(0.90),
-            None, // prior
-            Some(0.80),
-            None, // current — 10 pp drop
+            &dir, "pytest",
+            Some(0.90), None,  // prior
+            Some(0.80), None,  // current — 10 pp drop
         );
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
-        let finding = report
-            .layers
-            .iter()
+        let finding = report.layers.iter()
             .flat_map(|l| &l.findings)
             .find(|f| f.code == "COVERAGE_REGRESSION")
             .expect("COVERAGE_REGRESSION finding must be injected");
         assert_eq!(finding.severity, Severity::Medium);
-        assert!(
-            finding.message.contains("90.0%"),
-            "message must show prior value"
-        );
-        assert!(
-            finding.message.contains("80.0%"),
-            "message must show current value"
-        );
-        assert!(
-            finding
-                .reproduce_cmd
-                .as_deref()
-                .unwrap_or("")
-                .contains("pytest"),
-            "reproduce_cmd must come from the layer's existing finding"
-        );
+        assert!(finding.message.contains("90.0%"), "message must show prior value");
+        assert!(finding.message.contains("80.0%"), "message must show current value");
+        assert!(finding.reproduce_cmd.as_deref().unwrap_or("").contains("pytest"),
+            "reproduce_cmd must come from the layer's existing finding");
     }
 
     #[test]
     fn mutation_score_drop_injects_finding_with_reproduce_cmd() {
         let dir = tempdir().unwrap();
         let mut report = setup_single_regression(
-            &dir,
-            "cargo mutants",
-            None,
-            Some(0.85), // prior
-            None,
-            Some(0.70), // current — 15 pp drop
+            &dir, "cargo mutants",
+            None, Some(0.85),  // prior
+            None, Some(0.70),  // current — 15 pp drop
         );
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
-        let finding = report
-            .layers
-            .iter()
+        let finding = report.layers.iter()
             .flat_map(|l| &l.findings)
             .find(|f| f.code == "MUTATION_SCORE_REGRESSION")
             .expect("MUTATION_SCORE_REGRESSION finding must be injected");
         assert_eq!(finding.severity, Severity::Medium);
         assert!(finding.message.contains("85.0%"));
         assert!(finding.message.contains("70.0%"));
-        assert!(
-            !finding.reproduce_cmd.as_deref().unwrap_or("").is_empty(),
-            "reproduce_cmd must not be empty"
-        );
+        assert!(!finding.reproduce_cmd.as_deref().unwrap_or("").is_empty(),
+            "reproduce_cmd must not be empty");
     }
 
     #[test]
     fn equal_or_improved_metrics_produce_no_finding() {
         let dir = tempdir().unwrap();
         // Prior 0.80, current 0.85 — improvement, no finding
-        let mut report =
-            setup_single_regression(&dir, "pytest", Some(0.80), None, Some(0.85), None);
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.80), None,
+            Some(0.85), None,
+        );
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
-        assert!(!report
-            .layers
-            .iter()
+        assert!(!report.layers.iter()
             .flat_map(|l| &l.findings)
             .any(|f| f.code == "COVERAGE_REGRESSION"));
     }
@@ -1496,8 +1245,11 @@ mod tests {
     fn tolerance_suppresses_small_drops() {
         let dir = tempdir().unwrap();
         // 1 pp drop, but tolerance is 2 pp — no finding
-        let mut report =
-            setup_single_regression(&dir, "pytest", Some(0.90), None, Some(0.89), None);
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.89), None,
+        );
         let cfg = HistoryConfig {
             enabled: true,
             coverage_regression_tolerance: 0.02,
@@ -1505,9 +1257,7 @@ mod tests {
             ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
-        assert!(!report
-            .layers
-            .iter()
+        assert!(!report.layers.iter()
             .flat_map(|l| &l.findings)
             .any(|f| f.code == "COVERAGE_REGRESSION"));
     }
@@ -1515,21 +1265,17 @@ mod tests {
     #[test]
     fn disabled_history_suppresses_regression_findings() {
         let dir = tempdir().unwrap();
-        let mut report =
-            setup_single_regression(&dir, "pytest", Some(0.90), None, Some(0.80), None);
-        let cfg = HistoryConfig {
-            enabled: false,
-            ..HistoryConfig::default()
-        };
-        annotate_metric_regressions(&mut report, dir.path(), &cfg);
-        assert!(
-            !report
-                .layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "COVERAGE_REGRESSION"),
-            "regression findings must be suppressed when history.enabled = false"
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.80), None,
         );
+        let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "regression findings must be suppressed when history.enabled = false");
     }
 
     #[test]
@@ -1571,12 +1317,9 @@ mod tests {
         save_entry(&new_entry, dir.path()).unwrap();
 
         let mut report = setup_single_regression(
-            &dir,
-            runner,
-            None,
-            None, // prior ignored — we wrote manually above
-            Some(0.80),
-            None, // current 80% — above the latest prior of 75%
+            &dir, runner,
+            None, None,         // prior ignored — we wrote manually above
+            Some(0.80), None,   // current 80% — above the latest prior of 75%
         );
         // Clear the auto-written prior (setup_single_regression writes its own)
         // by recreating the history dir with only our two entries.
@@ -1588,14 +1331,10 @@ mod tests {
         save_entry(&new_entry, dir.path()).unwrap();
 
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
-        assert!(
-            !report
-                .layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "COVERAGE_REGRESSION"),
-            "latest prior is 75%, current is 80% — no regression vs latest prior"
-        );
+        assert!(!report.layers.iter()
+            .flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "latest prior is 75%, current is 80% — no regression vs latest prior");
     }
 
     #[test]
@@ -1646,20 +1385,11 @@ mod tests {
                         reproduce_cmd: Some("cargo mutants 2>&1".to_string()),
                         suggestion: None,
                     }],
-                    metrics: LayerMetrics {
-                        mutation_score: Some(0.70),
-                        ..Default::default()
-                    },
+                    metrics: LayerMetrics { mutation_score: Some(0.70), ..Default::default() },
                     duration_ms: 0,
                 }],
-                summary: Summary {
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Pass,
-                },
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
             },
             WorkspaceMemberReport {
                 package_path: "apps/web".to_string(),
@@ -1670,70 +1400,39 @@ mod tests {
                     runner: "stryker".to_string(),
                     status: LayerStatus::Pass,
                     findings: vec![],
-                    metrics: LayerMetrics {
-                        mutation_score: Some(0.80),
-                        ..Default::default()
-                    },
+                    metrics: LayerMetrics { mutation_score: Some(0.80), ..Default::default() },
                     duration_ms: 0,
                 }],
-                summary: Summary {
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0,
-                    overall_status: ReportStatus::Pass,
-                },
+                summary: Summary { total_findings: 0, critical: 0, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Pass },
             },
         ];
 
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
         // api must have a regression finding (0.85 → 0.70)
-        let api = report
-            .workspace_members
-            .iter()
-            .find(|m| m.package_path == "crates/api")
-            .unwrap();
-        assert!(
-            api.layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
-            "crates/api dropped 15 pp — must have MUTATION_SCORE_REGRESSION"
-        );
-        assert!(
-            matches!(api.status, ReportStatus::Partial),
-            "crates/api member.status must be Partial after regression injection"
-        );
-        assert_eq!(
-            api.summary.medium, 1,
-            "crates/api member.summary.medium must be 1 after regression injection"
-        );
+        let api = report.workspace_members.iter()
+            .find(|m| m.package_path == "crates/api").unwrap();
+        assert!(api.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
+            "crates/api dropped 15 pp — must have MUTATION_SCORE_REGRESSION");
+        assert!(matches!(api.status, ReportStatus::Partial),
+            "crates/api member.status must be Partial after regression injection");
+        assert_eq!(api.summary.medium, 1,
+            "crates/api member.summary.medium must be 1 after regression injection");
 
         // web has no prior — must not have a regression finding
-        let web = report
-            .workspace_members
-            .iter()
-            .find(|m| m.package_path == "apps/web")
-            .unwrap();
-        assert!(
-            !web.layers
-                .iter()
-                .flat_map(|l| &l.findings)
-                .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
-            "apps/web has no prior history entry — must not have regression finding"
-        );
-        assert!(
-            matches!(web.status, ReportStatus::Pass),
-            "apps/web member.status must remain Pass"
-        );
+        let web = report.workspace_members.iter()
+            .find(|m| m.package_path == "apps/web").unwrap();
+        assert!(!web.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "MUTATION_SCORE_REGRESSION"),
+            "apps/web has no prior history entry — must not have regression finding");
+        assert!(matches!(web.status, ReportStatus::Pass),
+            "apps/web member.status must remain Pass");
 
         // Aggregate report summary must be recomputed
-        assert!(
-            matches!(report.status, ReportStatus::Partial),
-            "aggregate report status must be Partial after workspace member regression"
-        );
+        assert!(matches!(report.status, ReportStatus::Partial),
+            "aggregate report status must be Partial after workspace member regression");
     }
 
     #[test]
@@ -1761,28 +1460,20 @@ mod tests {
             name: "logic".to_string(),
             runner: "pytest".to_string(),
             status: LayerStatus::Pass,
-            findings: vec![], // no existing findings → no reproduce_cmd to borrow
-            metrics: LayerMetrics {
-                coverage: Some(0.80),
-                ..Default::default()
-            },
+            findings: vec![],  // no existing findings → no reproduce_cmd to borrow
+            metrics: LayerMetrics { coverage: Some(0.80), ..Default::default() },
             duration_ms: 0,
         });
 
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
-        let finding = report
-            .layers
-            .iter()
+        let finding = report.layers.iter()
             .flat_map(|l| &l.findings)
             .find(|f| f.code == "COVERAGE_REGRESSION")
             .expect("COVERAGE_REGRESSION must be injected");
         let rc = finding.reproduce_cmd.as_deref().unwrap_or("");
         assert!(!rc.trim().is_empty(), "reproduce_cmd must not be empty");
-        assert!(
-            rc.contains("barzel"),
-            "fallback reproduce_cmd must reference barzel run"
-        );
+        assert!(rc.contains("barzel"), "fallback reproduce_cmd must reference barzel run");
     }
 
     #[test]
@@ -1812,8 +1503,8 @@ mod tests {
             status: LayerStatus::Pass,
             findings: vec![],
             metrics: LayerMetrics {
-                mutation_score: Some(0.70), // dropped 15 pp
-                coverage: Some(0.75),       // dropped 15 pp
+                mutation_score: Some(0.70),  // dropped 15 pp
+                coverage: Some(0.75),        // dropped 15 pp
                 ..Default::default()
             },
             duration_ms: 0,
@@ -1821,44 +1512,33 @@ mod tests {
 
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
-        let codes: Vec<_> = report
-            .layers
-            .iter()
+        let codes: Vec<_> = report.layers.iter()
             .flat_map(|l| &l.findings)
             .map(|f| f.code.as_str())
             .collect();
-        assert!(
-            codes.contains(&"COVERAGE_REGRESSION"),
-            "must emit COVERAGE_REGRESSION"
-        );
-        assert!(
-            codes.contains(&"MUTATION_SCORE_REGRESSION"),
-            "must emit MUTATION_SCORE_REGRESSION"
-        );
+        assert!(codes.contains(&"COVERAGE_REGRESSION"),     "must emit COVERAGE_REGRESSION");
+        assert!(codes.contains(&"MUTATION_SCORE_REGRESSION"), "must emit MUTATION_SCORE_REGRESSION");
     }
 
     #[test]
     fn regression_findings_appear_in_action_items_and_summary_is_coherent() {
         let dir = tempdir().unwrap();
-        let mut report =
-            setup_single_regression(&dir, "pytest", Some(0.90), None, Some(0.70), None);
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.70), None,
+        );
         annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
 
         // summary must be recomputed
-        let medium_count = report
-            .layers
-            .iter()
+        let medium_count = report.layers.iter()
             .flat_map(|l| &l.findings)
             .filter(|f| matches!(f.severity, Severity::Medium))
             .count();
         assert!(medium_count >= 1);
-        assert_eq!(
-            report.summary.medium, medium_count,
-            "summary.medium must match actual medium finding count after recompute"
-        );
-        assert!(
-            matches!(report.status, ReportStatus::Partial),
-            "a previously passing report with a medium finding must become Partial"
-        );
+        assert_eq!(report.summary.medium, medium_count,
+            "summary.medium must match actual medium finding count after recompute");
+        assert!(matches!(report.status, ReportStatus::Partial),
+            "a previously passing report with a medium finding must become Partial");
     }
 }

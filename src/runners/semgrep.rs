@@ -13,9 +13,7 @@ pub struct SemgrepRunner {
 
 impl Default for SemgrepRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -24,9 +22,7 @@ impl Default for SemgrepRunner {
 /// Only regular files are included — directories named `*.yaml` are silently skipped.
 fn collect_custom_rule_paths(root: &Path) -> Vec<PathBuf> {
     let rules_dir = root.join(".barzel").join("rules");
-    let Ok(entries) = std::fs::read_dir(&rules_dir) else {
-        return vec![];
-    };
+    let Ok(entries) = std::fs::read_dir(&rules_dir) else { return vec![]; };
 
     let mut paths: Vec<PathBuf> = entries
         .flatten()
@@ -54,10 +50,7 @@ fn shell_quote(s: &str) -> String {
 /// Collect all custom rule paths for a run: workspace-root rules (sorted) come
 /// first, then package-root rules (sorted). Canonical paths deduplicate entries
 /// so that when `workspace_root == project.root` no rule is passed twice.
-fn collect_all_custom_rule_paths(
-    project_root: &Path,
-    workspace_root: Option<&str>,
-) -> Vec<PathBuf> {
+fn collect_all_custom_rule_paths(project_root: &Path, workspace_root: Option<&str>) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut result = Vec::new();
 
@@ -106,11 +99,7 @@ fn build_semgrep_args(ruleset: &str, custom_rules: &[PathBuf]) -> Vec<String> {
 /// Config paths are shell-quoted to handle spaces; the literal target `.` is not quoted.
 fn build_error_reproduce_cmd(ruleset: &str, custom_rules: &[PathBuf]) -> String {
     let configs: Vec<String> = std::iter::once(format!("--config {}", shell_quote(ruleset)))
-        .chain(
-            custom_rules
-                .iter()
-                .map(|p| format!("--config {}", shell_quote(&p.to_string_lossy()))),
-        )
+        .chain(custom_rules.iter().map(|p| format!("--config {}", shell_quote(&p.to_string_lossy()))))
         .collect();
     format!("semgrep {} . 2>&1", configs.join(" "))
 }
@@ -153,11 +142,7 @@ impl TestRunner for SemgrepRunner {
 
         // Collect all config values for finding-level reproduce_cmd
         let all_configs: Vec<String> = std::iter::once(ruleset.to_string())
-            .chain(
-                custom_rules
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned()),
-            )
+            .chain(custom_rules.iter().map(|p| p.to_string_lossy().into_owned()))
             .collect();
 
         match self.proc.run("semgrep", &args_ref, root) {
@@ -255,11 +240,7 @@ fn parse_semgrep_json(output: &str, all_configs: &[String]) -> Vec<Finding> {
                     .iter()
                     .map(|c| format!("--config {}", shell_quote(c)))
                     .collect();
-                format!(
-                    "semgrep {} --include {} .",
-                    config_args.join(" "),
-                    shell_quote(p)
-                )
+                format!("semgrep {} --include {} .", config_args.join(" "), shell_quote(p))
             });
 
             Finding {
@@ -295,31 +276,15 @@ mod tests {
     use tempfile::tempdir;
 
     fn info() -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn info_at(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Python,
-            root: root.to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Python, root: root.to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> SemgrepRunner {
-        SemgrepRunner {
-            proc: Arc::new(mock),
-        }
+        SemgrepRunner { proc: Arc::new(mock) }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
@@ -402,8 +367,7 @@ mod tests {
         let paths = collect_custom_rule_paths(dir.path());
         assert_eq!(paths.len(), 3);
         // Must be sorted deterministically
-        let names: Vec<&str> = paths
-            .iter()
+        let names: Vec<&str> = paths.iter()
             .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap())
             .collect();
         assert_eq!(names, ["a-rules.yml", "m-rules.yaml", "z-rules.yaml"]);
@@ -418,10 +382,7 @@ mod tests {
 
     #[test]
     fn shell_quote_handles_paths_with_spaces() {
-        assert_eq!(
-            shell_quote("/my rules/custom.yml"),
-            "'/my rules/custom.yml'"
-        );
+        assert_eq!(shell_quote("/my rules/custom.yml"), "'/my rules/custom.yml'");
     }
 
     #[test]
@@ -445,14 +406,8 @@ mod tests {
         let cmd = findings[0].reproduce_cmd.as_deref().unwrap();
         // Both the config path and the --include path must be quoted
         assert!(cmd.contains("'p/python'"), "ruleset must be quoted");
-        assert!(
-            cmd.contains("'/project/my rules/custom.yml'"),
-            "rule path with space must be quoted"
-        );
-        assert!(
-            cmd.contains("'src/my file.py'"),
-            "file path with space must be quoted"
-        );
+        assert!(cmd.contains("'/project/my rules/custom.yml'"), "rule path with space must be quoted");
+        assert!(cmd.contains("'src/my file.py'"), "file path with space must be quoted");
     }
 
     #[test]
@@ -478,20 +433,13 @@ mod tests {
             PathBuf::from(".barzel/rules/b.yaml"),
         ];
         let args = build_semgrep_args("p/rust", &rules);
-        assert_eq!(
-            args,
-            [
-                "--json",
-                "--quiet",
-                "--config",
-                "p/rust",
-                "--config",
-                ".barzel/rules/a.yml",
-                "--config",
-                ".barzel/rules/b.yaml",
-                ".",
-            ]
-        );
+        assert_eq!(args, [
+            "--json", "--quiet",
+            "--config", "p/rust",
+            "--config", ".barzel/rules/a.yml",
+            "--config", ".barzel/rules/b.yaml",
+            ".",
+        ]);
     }
 
     // ── run() with custom rules ───────────────────────────────────────────────
@@ -502,28 +450,14 @@ mod tests {
         use std::sync::Mutex;
         struct CapturingProc(Mutex<Vec<Vec<String>>>);
         impl SubprocessRunner for CapturingProc {
-            fn run(
-                &self,
-                _cmd: &str,
-                args: &[&str],
-                _cwd: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(args.iter().map(|s| s.to_string()).collect());
-                Ok(crate::process::ProcessOutput {
-                    stdout: r#"{"results":[]}"#.to_string(),
-                    stderr: String::new(),
-                    success: true,
-                })
+            fn run(&self, _cmd: &str, args: &[&str], _cwd: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                self.0.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+                Ok(crate::process::ProcessOutput { stdout: r#"{"results":[]}"#.to_string(), stderr: String::new(), success: true })
             }
         }
         let dir = tempdir().unwrap();
         let captured = Arc::new(CapturingProc(Mutex::new(vec![])));
-        let runner = SemgrepRunner {
-            proc: captured.clone(),
-        };
+        let runner = SemgrepRunner { proc: captured.clone() };
         runner.run(&info_at(dir.path().to_str().unwrap())).unwrap();
 
         let calls = captured.0.lock().unwrap();
@@ -536,21 +470,9 @@ mod tests {
         use std::sync::Mutex;
         struct CapturingProc(Mutex<Vec<Vec<String>>>);
         impl SubprocessRunner for CapturingProc {
-            fn run(
-                &self,
-                _cmd: &str,
-                args: &[&str],
-                _cwd: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(args.iter().map(|s| s.to_string()).collect());
-                Ok(crate::process::ProcessOutput {
-                    stdout: r#"{"results":[]}"#.to_string(),
-                    stderr: String::new(),
-                    success: true,
-                })
+            fn run(&self, _cmd: &str, args: &[&str], _cwd: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                self.0.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+                Ok(crate::process::ProcessOutput { stdout: r#"{"results":[]}"#.to_string(), stderr: String::new(), success: true })
             }
         }
         let dir = tempdir().unwrap();
@@ -560,9 +482,7 @@ mod tests {
         std::fs::write(rules.join("b.yaml"), b"rules:").unwrap();
 
         let captured = Arc::new(CapturingProc(Mutex::new(vec![])));
-        let runner = SemgrepRunner {
-            proc: captured.clone(),
-        };
+        let runner = SemgrepRunner { proc: captured.clone() };
         runner.run(&info_at(dir.path().to_str().unwrap())).unwrap();
 
         let calls = captured.0.lock().unwrap();
@@ -570,8 +490,7 @@ mod tests {
         // Language ruleset comes first
         assert_eq!(&args[..4], ["--json", "--quiet", "--config", "p/python"]);
         // Both custom rules present in deterministic order
-        let config_pairs: Vec<(&str, &str)> = args
-            .windows(2)
+        let config_pairs: Vec<(&str, &str)> = args.windows(2)
             .filter(|w| w[0] == "--config")
             .map(|w| ("--config", w[1].as_str()))
             .collect();
@@ -592,32 +511,16 @@ mod tests {
 
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
             }
         }
-        let runner = SemgrepRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = SemgrepRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&info_at(dir.path().to_str().unwrap())).unwrap();
 
         let cmd = result.findings[0].reproduce_cmd.as_deref().unwrap();
-        assert!(
-            cmd.contains("p/python"),
-            "reproduce_cmd must include language ruleset"
-        );
-        assert!(
-            cmd.contains("custom.yml"),
-            "reproduce_cmd must include custom rule path"
-        );
+        assert!(cmd.contains("p/python"), "reproduce_cmd must include language ruleset");
+        assert!(cmd.contains("custom.yml"), "reproduce_cmd must include custom rule path");
     }
 
     // ── run() core behavior ───────────────────────────────────────────────────
@@ -634,9 +537,7 @@ mod tests {
     #[test]
     fn run_returns_fail_on_critical_finding() {
         let json = r#"{"results":[{"check_id":"sqli","path":"src/db.rs","start":{"line":1},"extra":{"severity":"ERROR","message":"SQL injection"}}]}"#;
-        let result = runner_with(MockProcessRunner::passing(json))
-            .run(&info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(json)).run(&info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings.len(), 1);
         assert!(matches!(result.findings[0].severity, Severity::Critical));
@@ -646,21 +547,11 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &std::path::Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "semgrep not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &std::path::Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "semgrep not found"))
             }
         }
-        let runner = SemgrepRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = SemgrepRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -692,11 +583,7 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert!(matches!(findings[0].severity, Severity::Critical));
         assert_eq!(findings[0].code, "rules.sqli");
-        assert!(findings[0]
-            .location
-            .as_deref()
-            .unwrap()
-            .contains("src/db.rs"));
+        assert!(findings[0].location.as_deref().unwrap().contains("src/db.rs"));
         assert!(findings[0].location.as_deref().unwrap().contains("42"));
     }
 
@@ -708,10 +595,7 @@ mod tests {
             "start": {"line": 1},
             "extra": {"severity": "ERROR", "message": "issue"}
         }]}"#;
-        let configs = vec![
-            "p/python".to_string(),
-            ".barzel/rules/custom.yml".to_string(),
-        ];
+        let configs = vec!["p/python".to_string(), ".barzel/rules/custom.yml".to_string()];
         let findings = parse_semgrep_json(json, &configs);
         let cmd = findings[0].reproduce_cmd.as_deref().unwrap();
         assert!(cmd.contains("--config 'p/python'"));
@@ -721,17 +605,17 @@ mod tests {
 
     #[test]
     fn maps_severity_correctly() {
-        assert!(matches!(map_semgrep_severity("ERROR"), Severity::Critical));
+        assert!(matches!(map_semgrep_severity("ERROR"),   Severity::Critical));
         assert!(matches!(map_semgrep_severity("WARNING"), Severity::High));
-        assert!(matches!(map_semgrep_severity("INFO"), Severity::Info));
+        assert!(matches!(map_semgrep_severity("INFO"),    Severity::Info));
         assert!(matches!(map_semgrep_severity("unknown"), Severity::Medium));
     }
 
     #[test]
     fn severity_mapping_is_case_insensitive() {
-        assert!(matches!(map_semgrep_severity("error"), Severity::Critical));
+        assert!(matches!(map_semgrep_severity("error"),   Severity::Critical));
         assert!(matches!(map_semgrep_severity("warning"), Severity::High));
-        assert!(matches!(map_semgrep_severity("info"), Severity::Info));
+        assert!(matches!(map_semgrep_severity("info"),    Severity::Info));
     }
 
     // ── collect_all_custom_rule_paths (workspace integration) ─────────────────
@@ -781,11 +665,7 @@ mod tests {
 
         // workspace_root == project.root → same dir, rules should appear once
         let paths = collect_all_custom_rule_paths(dir.path(), Some(dir.path().to_str().unwrap()));
-        assert_eq!(
-            paths.len(),
-            1,
-            "rule must not be duplicated when workspace_root == project.root"
-        );
+        assert_eq!(paths.len(), 1, "rule must not be duplicated when workspace_root == project.root");
     }
 
     #[test]
@@ -793,21 +673,9 @@ mod tests {
         use std::sync::Mutex;
         struct CapturingProc(Mutex<Vec<Vec<String>>>);
         impl SubprocessRunner for CapturingProc {
-            fn run(
-                &self,
-                _cmd: &str,
-                args: &[&str],
-                _cwd: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(args.iter().map(|s| s.to_string()).collect());
-                Ok(crate::process::ProcessOutput {
-                    stdout: r#"{"results":[]}"#.to_string(),
-                    stderr: String::new(),
-                    success: true,
-                })
+            fn run(&self, _cmd: &str, args: &[&str], _cwd: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                self.0.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+                Ok(crate::process::ProcessOutput { stdout: r#"{"results":[]}"#.to_string(), stderr: String::new(), success: true })
             }
         }
         let ws_dir = tempdir().unwrap();
@@ -821,17 +689,13 @@ mod tests {
         project.workspace_root = Some(ws_dir.path().to_string_lossy().into_owned());
 
         let captured = Arc::new(CapturingProc(Mutex::new(vec![])));
-        let runner = SemgrepRunner {
-            proc: captured.clone(),
-        };
+        let runner = SemgrepRunner { proc: captured.clone() };
         runner.run(&project).unwrap();
 
         let calls = captured.0.lock().unwrap();
         let args = &calls[0];
-        assert!(
-            args.iter().any(|a| a.ends_with("shared.yml")),
-            "workspace-root rule must appear in semgrep argv"
-        );
+        assert!(args.iter().any(|a| a.ends_with("shared.yml")),
+            "workspace-root rule must appear in semgrep argv");
     }
 
     proptest! {

@@ -15,39 +15,26 @@ pub struct MutantsRunner {
 
 impl Default for MutantsRunner {
     fn default() -> Self {
-        Self {
-            mutation_threshold: 95.0,
-            timeout_seconds: 30,
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { mutation_threshold: 95.0, timeout_seconds: 30, proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl MutantsRunner {
     pub fn with_threshold(mutation_threshold: f64) -> Self {
-        Self {
-            mutation_threshold,
-            ..Default::default()
-        }
+        Self { mutation_threshold, ..Default::default() }
     }
 }
 
 impl TestRunner for MutantsRunner {
-    fn name(&self) -> &'static str {
-        "cargo-mutants"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Structural
-    }
+    fn name(&self) -> &'static str { "cargo-mutants" }
+    fn layer(&self) -> Layer { Layer::Structural }
 
     fn skip_message(&self) -> &'static str {
         "cargo-mutants not installed — run `cargo install cargo-mutants` to enable mutation testing (target: ≥95% mutation score)"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Rust {
-            return false;
-        }
+        if project.language != crate::detect::Language::Rust { return false; }
         self.proc.is_available("cargo", &["mutants", "--version"])
     }
 
@@ -56,11 +43,7 @@ impl TestRunner for MutantsRunner {
         let root = Path::new(&project.root);
         let timeout = self.timeout_seconds.to_string();
 
-        match self.proc.run(
-            "cargo",
-            &["mutants", "--timeout", &timeout, "--no-shuffle"],
-            root,
-        ) {
+        match self.proc.run("cargo", &["mutants", "--timeout", &timeout, "--no-shuffle"], root) {
             Ok(out) => {
                 let mutation_score = parse_mutation_score(&out.combined());
                 let threshold = self.mutation_threshold;
@@ -99,10 +82,7 @@ impl TestRunner for MutantsRunner {
                     runner: "cargo-mutants".to_string(),
                     status,
                     findings,
-                    metrics: LayerMetrics {
-                        mutation_score,
-                        ..Default::default()
-                    },
+                    metrics: LayerMetrics { mutation_score, ..Default::default() },
                     duration_ms: start.elapsed().as_millis() as u64,
                 })
             }
@@ -118,10 +98,7 @@ impl TestRunner for MutantsRunner {
                     suggestion: Some("Install: `cargo install cargo-mutants`".to_string()),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics {
-                    failed: 1,
-                    ..Default::default()
-                },
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -134,16 +111,12 @@ pub fn parse_mutation_score(output: &str) -> Option<f64> {
             let caught = count_before_label(line, "caught");
             let missed = count_before_label(line, "missed");
             let total = caught + missed;
-            if total > 0 {
-                return Some(caught as f64 / total as f64 * 100.0);
-            }
+            if total > 0 { return Some(caught as f64 / total as f64 * 100.0); }
         }
         if line.contains("mutation score") && line.contains('%') {
             if let Some(pct) = line.split('%').next() {
                 if let Some(n) = pct.split_whitespace().last() {
-                    if let Ok(s) = n.parse::<f64>() {
-                        return Some(s);
-                    }
+                    if let Ok(s) = n.parse::<f64>() { return Some(s); }
                 }
             }
         }
@@ -169,85 +142,50 @@ mod tests {
     use proptest::prelude::*;
 
     fn rust_info() -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> MutantsRunner {
-        MutantsRunner {
-            proc: Arc::new(mock),
-            ..Default::default()
-        }
+        MutantsRunner { proc: Arc::new(mock), ..Default::default() }
     }
 
     #[test]
     fn name_and_layer() {
         assert_eq!(MutantsRunner::default().name(), "cargo-mutants");
-        assert!(matches!(
-            MutantsRunner::default().layer(),
-            Layer::Structural
-        ));
+        assert!(matches!(MutantsRunner::default().layer(), Layer::Structural));
     }
 
     #[test]
     fn not_available_for_non_rust() {
-        let r = MutantsRunner {
-            proc: Arc::new(MockProcessRunner::passing("")),
-            ..Default::default()
-        };
-        let i = ProjectInfo {
-            language: Language::TypeScript,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let r = MutantsRunner { proc: Arc::new(MockProcessRunner::passing("")), ..Default::default() };
+        let i = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 
     #[test]
     fn available_when_tool_present() {
-        let r = MutantsRunner {
-            proc: Arc::new(MockProcessRunner::passing("cargo-mutants 27")),
-            ..Default::default()
-        };
+        let r = MutantsRunner { proc: Arc::new(MockProcessRunner::passing("cargo-mutants 27")), ..Default::default() };
         assert!(r.is_available(&rust_info()));
     }
 
     #[test]
     fn not_available_when_tool_missing() {
-        let r = MutantsRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-            ..Default::default()
-        };
+        let r = MutantsRunner { proc: Arc::new(MockProcessRunner::unavailable()), ..Default::default() };
         assert!(!r.is_available(&rust_info()));
     }
 
     #[test]
     fn run_pass_at_100_percent() {
-        let result = runner_with(MockProcessRunner::passing(
-            "10 mutants tested in 5s: 0 missed, 10 caught",
-        ))
-        .run(&rust_info())
-        .unwrap();
+        let result = runner_with(MockProcessRunner::passing("10 mutants tested in 5s: 0 missed, 10 caught"))
+            .run(&rust_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.is_empty());
     }
 
     #[test]
     fn run_partial_below_threshold() {
-        let result = runner_with(MockProcessRunner::passing(
-            "10 mutants tested: 8 missed, 2 caught",
-        ))
-        .run(&rust_info())
-        .unwrap();
+        let result = runner_with(MockProcessRunner::passing("10 mutants tested: 8 missed, 2 caught"))
+            .run(&rust_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
         assert_eq!(result.findings[0].severity, Severity::High);
         assert!(result.findings[0].message.contains("20.0%"));
@@ -256,37 +194,19 @@ mod tests {
     #[test]
     fn run_uses_configurable_threshold() {
         let stdout = "10 mutants tested: 2 missed, 8 caught"; // 80%
-        let r = MutantsRunner {
-            mutation_threshold: 70.0,
-            proc: Arc::new(MockProcessRunner::passing(stdout)),
-            ..Default::default()
-        };
-        assert!(matches!(
-            r.run(&rust_info()).unwrap().status,
-            LayerStatus::Pass
-        ));
+        let r = MutantsRunner { mutation_threshold: 70.0, proc: Arc::new(MockProcessRunner::passing(stdout)), ..Default::default() };
+        assert!(matches!(r.run(&rust_info()).unwrap().status, LayerStatus::Pass));
     }
 
     #[test]
     fn run_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
             }
         }
-        let r = MutantsRunner {
-            proc: Arc::new(BrokenProc),
-            ..Default::default()
-        };
+        let r = MutantsRunner { proc: Arc::new(BrokenProc), ..Default::default() };
         let res = r.run(&rust_info()).unwrap();
         assert!(matches!(res.status, LayerStatus::Fail));
         assert_eq!(res.metrics.failed, 1);
@@ -300,9 +220,7 @@ mod tests {
 
     #[test]
     fn parses_with_unviable() {
-        let s =
-            parse_mutation_score("461 mutants tested in 8m: 395 missed, 37 caught, 29 unviable")
-                .unwrap();
+        let s = parse_mutation_score("461 mutants tested in 8m: 395 missed, 37 caught, 29 unviable").unwrap();
         assert!((s - 37.0 / 432.0 * 100.0).abs() < 0.01);
     }
 

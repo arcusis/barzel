@@ -13,9 +13,7 @@ pub struct FastCheckRunner {
 
 impl Default for FastCheckRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -53,11 +51,7 @@ impl TestRunner for FastCheckRunner {
             Ok(out) => {
                 let combined = out.combined();
 
-                let status = if out.success {
-                    LayerStatus::Pass
-                } else {
-                    LayerStatus::Fail
-                };
+                let status = if out.success { LayerStatus::Pass } else { LayerStatus::Fail };
                 let (tests_run, tests_passed, tests_failed) = parse_ts_test_counts(&combined);
 
                 let findings = if out.success {
@@ -67,15 +61,15 @@ impl TestRunner for FastCheckRunner {
                     vec![Finding {
                         severity: Severity::High,
                         code: "PBT_FAILURE".to_string(),
-                        message: format!("Property-based tests failed ({} failed)", tests_failed),
+                        message: format!(
+                            "Property-based tests failed ({} failed)",
+                            tests_failed
+                        ),
                         reproduce_cmd: Some(format!("{} test 2>&1 | head -80", pm)),
                         suggestion: if failing_tests.is_empty() {
                             Some("Run the test suite and check the property that failed. Examine the counterexample reported by fast-check and tighten your invariant.".to_string())
                         } else {
-                            Some(format!(
-                                "Failing: {}. Examine the counterexample and fix the invariant.",
-                                failing_tests.join(", ")
-                            ))
+                            Some(format!("Failing: {}. Examine the counterexample and fix the invariant.", failing_tests.join(", ")))
                         },
                         ..Default::default()
                     }]
@@ -105,10 +99,7 @@ impl TestRunner for FastCheckRunner {
                     code: "TEST_RUNNER_ERROR".to_string(),
                     message: format!("Failed to run test suite: {}", e),
                     reproduce_cmd: Some(format!("{} test", pm)),
-                    suggestion: Some(
-                        "Ensure node_modules are installed: run `pnpm install` (or npm install)."
-                            .to_string(),
-                    ),
+                    suggestion: Some("Ensure node_modules are installed: run `pnpm install` (or npm install).".to_string()),
                     ..Default::default()
                 }],
                 metrics: LayerMetrics {
@@ -215,20 +206,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn ts_info(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::TypeScript,
-            root: root.to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::TypeScript, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> FastCheckRunner {
-        FastCheckRunner {
-            proc: Arc::new(mock),
-        }
+        FastCheckRunner { proc: Arc::new(mock) }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
@@ -245,9 +227,7 @@ mod tests {
 
     #[test]
     fn skip_message_mentions_fast_check() {
-        assert!(FastCheckRunner::default()
-            .skip_message()
-            .contains("fast-check"));
+        assert!(FastCheckRunner::default().skip_message().contains("fast-check"));
     }
 
     // ── is_available ──────────────────────────────────────────────────────────
@@ -255,52 +235,23 @@ mod tests {
     #[test]
     fn not_available_for_rust() {
         let dir = tempdir().unwrap();
-        let info = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let info = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!FastCheckRunner::default().is_available(&info));
     }
 
     #[test]
     fn available_when_fast_check_in_package_json() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("package.json"),
-            br#"{"devDependencies":{"fast-check":"3.0"}}"#,
-        )
-        .unwrap();
-        let info = ProjectInfo {
-            language: Language::TypeScript,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"fast-check":"3.0"}}"#).unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(FastCheckRunner::default().is_available(&info));
     }
 
     #[test]
     fn not_available_when_fast_check_missing_from_package_json() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("package.json"),
-            br#"{"devDependencies":{}}"#,
-        )
-        .unwrap();
-        let info = ProjectInfo {
-            language: Language::TypeScript,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{}}"#).unwrap();
+        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!FastCheckRunner::default().is_available(&info));
     }
 
@@ -309,15 +260,9 @@ mod tests {
     #[test]
     fn run_returns_pass_on_success() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("package.json"),
-            br#"{"devDependencies":{"jest":"29"}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"jest":"29"}}"#).unwrap();
         let stdout = "Tests: 5 passed, 5 total";
-        let result = runner_with(MockProcessRunner::passing(stdout))
-            .run(&ts_info(&dir.path().to_string_lossy()))
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.is_empty());
     }
@@ -325,15 +270,9 @@ mod tests {
     #[test]
     fn run_returns_fail_on_test_failure() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("package.json"),
-            br#"{"devDependencies":{"jest":"29"}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("package.json"), br#"{"devDependencies":{"jest":"29"}}"#).unwrap();
         let stdout = "Tests: 3 passed, 2 failed, 5 total";
-        let result = runner_with(MockProcessRunner::failing(stdout))
-            .run(&ts_info(&dir.path().to_string_lossy()))
-            .unwrap();
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::High);
     }
@@ -342,23 +281,13 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "sh not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "sh not found"))
             }
         }
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), b"{}").unwrap();
-        let runner = FastCheckRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = FastCheckRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);

@@ -13,9 +13,7 @@ pub struct GoTestRunner {
 
 impl Default for GoTestRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -43,10 +41,7 @@ impl TestRunner for GoTestRunner {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        match self
-            .proc
-            .run("go", &["test", "./...", "-json", "-count=1", "-race"], root)
-        {
+        match self.proc.run("go", &["test", "./...", "-json", "-count=1", "-race"], root) {
             Ok(out) => {
                 let (passed, failed, panics) = parse_go_json_output(&out.stdout);
                 let total = passed + failed;
@@ -195,20 +190,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn go_info() -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Go,
-            root: "/tmp".to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Go, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> GoTestRunner {
-        GoTestRunner {
-            proc: Arc::new(mock),
-        }
+        GoTestRunner { proc: Arc::new(mock) }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
@@ -220,10 +206,7 @@ mod tests {
 
     #[test]
     fn layer_is_logic() {
-        assert!(matches!(
-            GoTestRunner::default().layer(),
-            crate::plugin::Layer::Logic
-        ));
+        assert!(matches!(GoTestRunner::default().layer(), crate::plugin::Layer::Logic));
     }
 
     #[test]
@@ -235,43 +218,25 @@ mod tests {
 
     #[test]
     fn not_available_for_rust() {
-        let info = ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let info = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!GoTestRunner::default().is_available(&info));
     }
 
     #[test]
     fn not_available_for_typescript() {
-        let info = ProjectInfo {
-            language: Language::TypeScript,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let info = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!GoTestRunner::default().is_available(&info));
     }
 
     #[test]
     fn available_when_go_present() {
-        let r = GoTestRunner {
-            proc: Arc::new(MockProcessRunner::passing("go version go1.22")),
-        };
+        let r = GoTestRunner { proc: Arc::new(MockProcessRunner::passing("go version go1.22")) };
         assert!(r.is_available(&go_info()));
     }
 
     #[test]
     fn not_available_when_go_missing() {
-        let r = GoTestRunner {
-            proc: Arc::new(MockProcessRunner::unavailable()),
-        };
+        let r = GoTestRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
         assert!(!r.is_available(&go_info()));
     }
 
@@ -281,9 +246,7 @@ mod tests {
     fn run_returns_pass_on_all_passing() {
         let stdout = r#"{"Action":"pass","Test":"TestFoo","Package":"pkg"}
 {"Action":"pass","Test":"TestBar","Package":"pkg"}"#;
-        let result = runner_with(MockProcessRunner::passing(stdout))
-            .run(&go_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&go_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.passed, 2);
         assert_eq!(result.metrics.failed, 0);
@@ -293,9 +256,7 @@ mod tests {
     fn run_returns_fail_on_test_failure() {
         let stdout = r#"{"Action":"pass","Test":"TestFoo","Package":"pkg"}
 {"Action":"fail","Test":"TestBar","Package":"pkg"}"#;
-        let result = runner_with(MockProcessRunner::failing(stdout))
-            .run(&go_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&go_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::High);
     }
@@ -304,21 +265,11 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "go not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "go not found"))
             }
         }
-        let runner = GoTestRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = GoTestRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&go_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -328,10 +279,7 @@ mod tests {
 
     fn make_event(action: &str, test: Option<&str>) -> String {
         if let Some(t) = test {
-            format!(
-                r#"{{"Action":"{}","Test":"{}","Package":"example.com/pkg"}}"#,
-                action, t
-            )
+            format!(r#"{{"Action":"{}","Test":"{}","Package":"example.com/pkg"}}"#, action, t)
         } else {
             format!(r#"{{"Action":"{}","Package":"example.com/pkg"}}"#, action)
         }
@@ -366,8 +314,7 @@ mod tests {
 
     #[test]
     fn detects_panic_in_fail_event() {
-        let event =
-            r#"{"Action":"fail","Test":"TestPanic","Package":"pkg","Output":"panic: nil pointer"}"#;
+        let event = r#"{"Action":"fail","Test":"TestPanic","Package":"pkg","Output":"panic: nil pointer"}"#;
         let (_, failed, panics) = parse_go_json_output(event);
         assert_eq!(failed, 1);
         assert_eq!(panics.len(), 1);

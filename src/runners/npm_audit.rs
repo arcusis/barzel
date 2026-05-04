@@ -15,28 +15,20 @@ pub struct NpmAuditRunner {
 
 impl Default for NpmAuditRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl TestRunner for NpmAuditRunner {
-    fn name(&self) -> &'static str {
-        "npm-audit"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Hostile
-    }
+    fn name(&self) -> &'static str { "npm-audit" }
+    fn layer(&self) -> Layer { Layer::Hostile }
 
     fn skip_message(&self) -> &'static str {
         "npm-audit requires a lockfile — run `npm install` or `pnpm install` to generate one"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::TypeScript {
-            return false;
-        }
+        if project.language != crate::detect::Language::TypeScript { return false; }
         // Check package root first; fall back to workspace root so members without
         // their own lockfile (common in pnpm/npm workspaces) are still detected.
         let has_lockfile = |dir: &Path| {
@@ -45,10 +37,7 @@ impl TestRunner for NpmAuditRunner {
                 || dir.join("yarn.lock").exists()
         };
         has_lockfile(Path::new(&project.root))
-            || project
-                .workspace_root
-                .as_deref()
-                .is_some_and(|ws| has_lockfile(Path::new(ws)))
+            || project.workspace_root.as_deref().is_some_and(|ws| has_lockfile(Path::new(ws)))
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
@@ -87,15 +76,9 @@ impl TestRunner for NpmAuditRunner {
                     f.reproduce_cmd = Some(audit_reproduce_cmd(cmd, root, &f.code));
                 }
 
-                let status = if findings
-                    .iter()
-                    .any(|f| matches!(f.severity, Severity::Critical))
-                {
+                let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
                     LayerStatus::Fail
-                } else if findings
-                    .iter()
-                    .any(|f| matches!(f.severity, Severity::High | Severity::Medium))
-                {
+                } else if findings.iter().any(|f| matches!(f.severity, Severity::High | Severity::Medium)) {
                     LayerStatus::Partial
                 } else {
                     LayerStatus::Pass
@@ -106,9 +89,7 @@ impl TestRunner for NpmAuditRunner {
                         severity: Severity::Info,
                         code: "NPM_AUDIT_PASSED".to_string(),
                         message: "No known vulnerabilities in npm dependencies".to_string(),
-                        suggestion: Some(
-                            "Keep dependencies updated: `npx npm-check-updates -u`".to_string(),
-                        ),
+                        suggestion: Some("Keep dependencies updated: `npx npm-check-updates -u`".to_string()),
                         ..Default::default()
                     }]
                 } else {
@@ -132,21 +113,11 @@ impl TestRunner for NpmAuditRunner {
                     severity: Severity::Critical,
                     code: "NPM_AUDIT_FAILED".to_string(),
                     message: format!("Failed to run {} audit: {}", cmd, e),
-                    reproduce_cmd: Some(format!(
-                        "cd {} && {} audit --json 2>&1",
-                        shell_quote(root),
-                        cmd
-                    )),
-                    suggestion: Some(format!(
-                        "Ensure {} is installed and `{} install` has been run.",
-                        cmd, cmd
-                    )),
+                    reproduce_cmd: Some(format!("cd {} && {} audit --json 2>&1", shell_quote(root), cmd)),
+                    suggestion: Some(format!("Ensure {} is installed and `{} install` has been run.", cmd, cmd)),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics {
-                    failed: 1,
-                    ..Default::default()
-                },
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -193,42 +164,33 @@ pub fn parse_npm_audit_json(output: &str) -> Vec<Finding> {
 fn extract_npm_findings(json: &serde_json::Value) -> Option<Vec<Finding>> {
     // npm audit JSON v2: {"vulnerabilities": {"pkg": {"severity": "high", "via": [...]}}}
     let vulns = json.get("vulnerabilities")?.as_object()?;
-    let findings: Vec<Finding> = vulns
-        .iter()
-        .map(|(pkg, vuln)| {
-            let severity_str = vuln
-                .get("severity")
-                .and_then(|s| s.as_str())
-                .unwrap_or("low");
-            let severity = match severity_str {
-                "critical" => Severity::Critical,
-                "high" => Severity::High,
-                "moderate" | "medium" => Severity::Medium,
-                _ => Severity::Low,
-            };
+    let findings: Vec<Finding> = vulns.iter().map(|(pkg, vuln)| {
+        let severity_str = vuln.get("severity").and_then(|s| s.as_str()).unwrap_or("low");
+        let severity = match severity_str {
+            "critical" => Severity::Critical,
+            "high" => Severity::High,
+            "moderate" | "medium" => Severity::Medium,
+            _ => Severity::Low,
+        };
 
-            let fix_available = vuln
-                .get("fixAvailable")
-                .and_then(|f| f.as_bool())
-                .unwrap_or(false);
+        let fix_available = vuln.get("fixAvailable")
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false);
 
-            Finding {
-                severity,
-                code: format!("NPM_VULN_{}", pkg.to_uppercase().replace('-', "_")),
-                message: format!("Vulnerability in `{}` ({})", pkg, severity_str),
-                // Default uses npm; run() overwrites with the selected package manager and cwd.
-                reproduce_cmd: Some(format!(
-                    "npm audit --json 2>&1 | jq '.vulnerabilities.\"{pkg}\"'"
-                )),
-                suggestion: Some(if fix_available {
-                    "Run `npm audit fix` to auto-fix. Review breaking changes first.".to_string()
-                } else {
-                    "No automatic fix available. Review and replace the dependency.".to_string()
-                }),
-                ..Default::default()
-            }
-        })
-        .collect();
+        Finding {
+            severity,
+            code: format!("NPM_VULN_{}", pkg.to_uppercase().replace('-', "_")),
+            message: format!("Vulnerability in `{}` ({})", pkg, severity_str),
+            // Default uses npm; run() overwrites with the selected package manager and cwd.
+            reproduce_cmd: Some(format!("npm audit --json 2>&1 | jq '.vulnerabilities.\"{pkg}\"'")),
+            suggestion: Some(if fix_available {
+                "Run `npm audit fix` to auto-fix. Review breaking changes first.".to_string()
+            } else {
+                "No automatic fix available. Review and replace the dependency.".to_string()
+            }),
+            ..Default::default()
+        }
+    }).collect();
     Some(findings)
 }
 
@@ -257,25 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn name_is_npm_audit() {
-        assert_eq!(NpmAuditRunner::default().name(), "npm-audit");
-    }
+    fn name_is_npm_audit() { assert_eq!(NpmAuditRunner::default().name(), "npm-audit"); }
 
     #[test]
-    fn layer_is_hostile() {
-        assert!(matches!(NpmAuditRunner::default().layer(), Layer::Hostile));
-    }
+    fn layer_is_hostile() { assert!(matches!(NpmAuditRunner::default().layer(), Layer::Hostile)); }
 
     #[test]
     fn not_available_for_rust() {
-        let i = ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!NpmAuditRunner::default().is_available(&i));
     }
 
@@ -303,9 +254,7 @@ mod tests {
     fn clean_project_returns_pass() {
         let dir = setup_npm_dir();
         let json = r#"{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}"#;
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing(json)),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.iter().any(|f| f.code == "NPM_AUDIT_PASSED"));
@@ -315,9 +264,7 @@ mod tests {
     fn critical_vulnerability_returns_fail() {
         let dir = setup_npm_dir();
         let json = r#"{"vulnerabilities":{"lodash":{"severity":"critical","fixAvailable":true}}}"#;
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::failing(json)),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -328,21 +275,15 @@ mod tests {
     fn high_severity_returns_partial() {
         let dir = setup_npm_dir();
         let json = r#"{"vulnerabilities":{"axios":{"severity":"high","fixAvailable":false}}}"#;
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::failing(json)),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
     }
 
     #[test]
     fn available_with_workspace_root_pnpm_lock() {
-        let ws_dir = tempdir().unwrap();
-        std::fs::write(
-            ws_dir.path().join("pnpm-lock.yaml"),
-            b"lockfileVersion: '6.0'",
-        )
-        .unwrap();
+        let ws_dir  = tempdir().unwrap();
+        std::fs::write(ws_dir.path().join("pnpm-lock.yaml"), b"lockfileVersion: '6.0'").unwrap();
         let pkg_dir = tempdir().unwrap();
         let info = ProjectInfo {
             language: Language::TypeScript,
@@ -352,15 +293,13 @@ mod tests {
             frameworks: Default::default(),
             workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
         };
-        assert!(
-            NpmAuditRunner::default().is_available(&info),
-            "should be available when lockfile is at workspace root"
-        );
+        assert!(NpmAuditRunner::default().is_available(&info),
+            "should be available when lockfile is at workspace root");
     }
 
     #[test]
     fn not_available_without_lockfile_even_with_workspace_root() {
-        let ws_dir = tempdir().unwrap();
+        let ws_dir  = tempdir().unwrap();
         let pkg_dir = tempdir().unwrap();
         let info = ProjectInfo {
             language: Language::TypeScript,
@@ -370,10 +309,8 @@ mod tests {
             frameworks: Default::default(),
             workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
         };
-        assert!(
-            !NpmAuditRunner::default().is_available(&info),
-            "should not be available when neither package root nor workspace root has a lockfile"
-        );
+        assert!(!NpmAuditRunner::default().is_available(&info),
+            "should not be available when neither package root nor workspace root has a lockfile");
     }
 
     /// Recording subprocess runner — captures the last call for assertion.
@@ -385,30 +322,17 @@ mod tests {
     impl RecordingRunner {
         fn passing(stdout: &str) -> Self {
             Self {
-                response: crate::process::ProcessOutput {
-                    success: true,
-                    stdout: stdout.to_string(),
-                    stderr: String::new(),
-                },
+                response: crate::process::ProcessOutput { success: true, stdout: stdout.to_string(), stderr: String::new() },
                 last_call: std::sync::Mutex::new(None),
             }
         }
         fn last(&self) -> (String, Vec<String>, std::path::PathBuf) {
-            self.last_call
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("no call recorded")
+            self.last_call.lock().unwrap().clone().expect("no call recorded")
         }
     }
 
     impl crate::process::SubprocessRunner for RecordingRunner {
-        fn run(
-            &self,
-            cmd: &str,
-            args: &[&str],
-            cwd: &std::path::Path,
-        ) -> std::io::Result<crate::process::ProcessOutput> {
+        fn run(&self, cmd: &str, args: &[&str], cwd: &std::path::Path) -> std::io::Result<crate::process::ProcessOutput> {
             *self.last_call.lock().unwrap() = Some((
                 cmd.to_string(),
                 args.iter().map(|s| s.to_string()).collect(),
@@ -421,11 +345,7 @@ mod tests {
     #[test]
     fn run_uses_workspace_root_as_cwd_and_selects_pnpm() {
         let ws_dir = tempdir().unwrap();
-        std::fs::write(
-            ws_dir.path().join("pnpm-lock.yaml"),
-            b"lockfileVersion: '6.0'",
-        )
-        .unwrap();
+        std::fs::write(ws_dir.path().join("pnpm-lock.yaml"), b"lockfileVersion: '6.0'").unwrap();
         let pkg_dir = tempdir().unwrap();
         let info = ProjectInfo {
             language: Language::TypeScript,
@@ -436,23 +356,14 @@ mod tests {
             workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
         };
         let recorder = Arc::new(RecordingRunner::passing(r#"{"vulnerabilities":{}}"#));
-        let r = NpmAuditRunner {
-            proc: Arc::clone(&recorder) as Arc<dyn crate::process::SubprocessRunner>,
-        };
+        let r = NpmAuditRunner { proc: Arc::clone(&recorder) as Arc<dyn crate::process::SubprocessRunner> };
         let result = r.run(&info).unwrap();
 
         assert!(matches!(result.status, LayerStatus::Pass));
         let (cmd, args, cwd) = recorder.last();
-        assert_eq!(
-            cmd, "pnpm",
-            "must select pnpm when pnpm-lock.yaml is at workspace root"
-        );
+        assert_eq!(cmd, "pnpm", "must select pnpm when pnpm-lock.yaml is at workspace root");
         assert_eq!(args, &["audit", "--json"]);
-        assert_eq!(
-            cwd,
-            ws_dir.path(),
-            "cwd must be workspace root where pnpm-lock.yaml lives"
-        );
+        assert_eq!(cwd, ws_dir.path(), "cwd must be workspace root where pnpm-lock.yaml lives");
     }
 
     #[test]
@@ -460,39 +371,23 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("pnpm-lock.yaml"), b"lockfileVersion: '6.0'").unwrap();
         let json = r#"{"vulnerabilities":{"lodash":{"severity":"high","fixAvailable":false}}}"#;
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing(json)),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         let rc = result.findings[0].reproduce_cmd.as_deref().unwrap_or("");
-        assert!(
-            rc.contains("pnpm"),
-            "reproduce_cmd must name pnpm, got: {rc}"
-        );
-        assert!(
-            rc.contains(&dir.path().to_string_lossy().as_ref()),
-            "reproduce_cmd must include cwd"
-        );
+        assert!(rc.contains("pnpm"), "reproduce_cmd must name pnpm, got: {rc}");
+        assert!(rc.contains(&dir.path().to_string_lossy().as_ref()), "reproduce_cmd must include cwd");
     }
 
     #[test]
     fn spawn_error_finding_names_selected_cmd() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("yarn.lock"), b"").unwrap();
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::spawn_error("not found")),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::spawn_error("not found")) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         let finding = &result.findings[0];
-        assert!(
-            finding.message.contains("yarn"),
-            "error message must name yarn"
-        );
+        assert!(finding.message.contains("yarn"), "error message must name yarn");
         let rc = finding.reproduce_cmd.as_deref().unwrap_or("");
-        assert!(
-            rc.contains("yarn"),
-            "reproduce_cmd must name yarn on spawn error"
-        );
+        assert!(rc.contains("yarn"), "reproduce_cmd must name yarn on spawn error");
     }
 
     #[test]
@@ -501,11 +396,7 @@ mod tests {
         let findings = parse_npm_audit_json(json);
         assert_eq!(findings.len(), 1);
         assert!(matches!(findings[0].severity, Severity::Medium));
-        assert!(findings[0]
-            .suggestion
-            .as_ref()
-            .unwrap()
-            .contains("audit fix"));
+        assert!(findings[0].suggestion.as_ref().unwrap().contains("audit fix"));
     }
 
     #[test]
@@ -514,11 +405,7 @@ mod tests {
         let findings = parse_npm_audit_json(json);
         assert!(!findings.is_empty());
         for f in &findings {
-            assert!(
-                f.reproduce_cmd.is_some(),
-                "parser finding '{}' must have reproduce_cmd",
-                f.code
-            );
+            assert!(f.reproduce_cmd.is_some(), "parser finding '{}' must have reproduce_cmd", f.code);
         }
     }
 
@@ -529,19 +416,11 @@ mod tests {
         std::fs::create_dir_all(&spaced).unwrap();
         std::fs::write(spaced.join("package-lock.json"), b"{}").unwrap();
         let json = r#"{"vulnerabilities":{"lodash":{"severity":"high","fixAvailable":false}}}"#;
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing(json)),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
         let result = r.run(&ts_info(&spaced.to_string_lossy())).unwrap();
         let rc = result.findings[0].reproduce_cmd.as_deref().unwrap_or("");
-        assert!(
-            rc.contains("'"),
-            "path with spaces must be single-quoted in reproduce_cmd, got: {rc}"
-        );
-        assert!(
-            !rc.contains("my project "),
-            "unquoted path must not appear in reproduce_cmd"
-        );
+        assert!(rc.contains("'"), "path with spaces must be single-quoted in reproduce_cmd, got: {rc}");
+        assert!(!rc.contains("my project "), "unquoted path must not appear in reproduce_cmd");
     }
 
     #[test]
@@ -550,14 +429,9 @@ mod tests {
         let spaced = base.path().join("my workspace");
         std::fs::create_dir_all(&spaced).unwrap();
         std::fs::write(spaced.join("yarn.lock"), b"").unwrap();
-        let r = NpmAuditRunner {
-            proc: Arc::new(MockProcessRunner::spawn_error("not found")),
-        };
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::spawn_error("not found")) };
         let result = r.run(&ts_info(&spaced.to_string_lossy())).unwrap();
         let rc = result.findings[0].reproduce_cmd.as_deref().unwrap_or("");
-        assert!(
-            rc.contains("'"),
-            "spawn-error reproduce_cmd must shell-quote path with spaces, got: {rc}"
-        );
+        assert!(rc.contains("'"), "spawn-error reproduce_cmd must shell-quote path with spaces, got: {rc}");
     }
 }

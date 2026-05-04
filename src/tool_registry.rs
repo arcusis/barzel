@@ -41,13 +41,7 @@ impl ToolEntry {
         layer: &'static str,
         install: &'static str,
     ) -> Self {
-        Self {
-            name,
-            check_args,
-            layer,
-            install,
-            mode: AvailabilityMode::ExitSuccess,
-        }
+        Self { name, check_args, layer, install, mode: AvailabilityMode::ExitSuccess }
     }
 
     const fn spawn_ok(
@@ -56,13 +50,7 @@ impl ToolEntry {
         layer: &'static str,
         install: &'static str,
     ) -> Self {
-        Self {
-            name,
-            check_args,
-            layer,
-            install,
-            mode: AvailabilityMode::SpawnOk,
-        }
+        Self { name, check_args, layer, install, mode: AvailabilityMode::SpawnOk }
     }
 }
 
@@ -78,80 +66,30 @@ impl ToolEntry {
 pub const TOOL_REGISTRY: &[ToolEntry] = &[
     // ── Core runtimes ─────────────────────────────────────────────────────────
     ToolEntry::new("cargo", &["--version"], "core", "https://rustup.rs"),
-    ToolEntry::new("go", &["version"], "core", "https://go.dev/dl"),
-    ToolEntry::new("node", &["--version"], "core", "https://nodejs.org"),
-    ToolEntry::new("npx", &["--version"], "core", "https://nodejs.org"),
+    ToolEntry::new("go",    &["version"],   "core", "https://go.dev/dl"),
+    ToolEntry::new("node",  &["--version"], "core", "https://nodejs.org"),
+    ToolEntry::new("npx",   &["--version"], "core", "https://nodejs.org"),
     // ── Logic layer ───────────────────────────────────────────────────────────
-    ToolEntry::new(
-        "cargo kani",
-        &["kani", "--version"],
-        "logic",
-        "cargo install --locked kani-verifier",
-    ),
-    ToolEntry::new("mypy", &["--version"], "logic", "pip install mypy"),
+    ToolEntry::new("cargo kani", &["kani", "--version"], "logic", "cargo install --locked kani-verifier"),
+    ToolEntry::new("mypy",   &["--version"], "logic", "pip install mypy"),
     ToolEntry::new("pytest", &["--version"], "logic", "pip install pytest"),
     // ── Structural layer ──────────────────────────────────────────────────────
-    ToolEntry::new(
-        "cargo mutants",
-        &["mutants", "--version"],
-        "structural",
-        "cargo install cargo-mutants",
-    ),
+    ToolEntry::new("cargo mutants", &["mutants", "--version"], "structural", "cargo install cargo-mutants"),
     // go-mutesting --help exits non-zero; use SpawnOk so a present binary is not
     // falsely reported as missing.
-    ToolEntry::spawn_ok(
-        "go-mutesting",
-        &["--help"],
-        "structural",
-        "go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest",
-    ),
+    ToolEntry::spawn_ok("go-mutesting", &["--help"], "structural", "go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest"),
     ToolEntry::new("mutmut", &["--version"], "structural", "pip install mutmut"),
     // ── Hostile layer ─────────────────────────────────────────────────────────
-    ToolEntry::new("bandit", &["--version"], "hostile", "pip install bandit"),
-    ToolEntry::new(
-        "cargo audit",
-        &["audit", "--version"],
-        "hostile",
-        "cargo install cargo-audit",
-    ),
-    ToolEntry::new(
-        "cargo fuzz",
-        &["fuzz", "--version"],
-        "hostile",
-        "cargo install cargo-fuzz",
-    ),
+    ToolEntry::new("bandit",      &["--version"],          "hostile", "pip install bandit"),
+    ToolEntry::new("cargo audit", &["audit", "--version"], "hostile", "cargo install cargo-audit"),
+    ToolEntry::new("cargo fuzz",  &["fuzz", "--version"],  "hostile", "cargo install cargo-fuzz"),
     // npm-audit, pnpm-audit, yarn-audit are subcommands of the package manager,
     // not standalone binaries. NpmAuditRunner selects based on lockfile.
-    ToolEntry::new(
-        "npm",
-        &["--version"],
-        "hostile",
-        "https://nodejs.org  (bundled with node)",
-    ),
-    ToolEntry::new(
-        "pip-audit",
-        &["--version"],
-        "hostile",
-        "pip install pip-audit",
-    ),
-    ToolEntry::new(
-        "pnpm",
-        &["--version"],
-        "hostile",
-        "npm install -g pnpm  OR  https://pnpm.io/installation",
-    ),
-    ToolEntry::new(
-        "semgrep",
-        &["--version"],
-        "hostile",
-        "pip install semgrep  OR  brew install semgrep",
-    ),
-    ToolEntry::new(
-        "yarn",
-        &["--version"],
-        "hostile",
-        "npm install -g yarn  OR  https://yarnpkg.com",
-    ),
+    ToolEntry::new("npm",     &["--version"], "hostile", "https://nodejs.org  (bundled with node)"),
+    ToolEntry::new("pip-audit", &["--version"], "hostile", "pip install pip-audit"),
+    ToolEntry::new("pnpm",    &["--version"], "hostile", "npm install -g pnpm  OR  https://pnpm.io/installation"),
+    ToolEntry::new("semgrep", &["--version"], "hostile", "pip install semgrep  OR  brew install semgrep"),
+    ToolEntry::new("yarn",    &["--version"], "hostile", "npm install -g yarn  OR  https://yarnpkg.com"),
 ];
 
 /// Result of probing a single tool.
@@ -175,36 +113,29 @@ pub struct ToolStatus {
 /// Probe every entry in `TOOL_REGISTRY` using `proc`.
 /// Returns statuses with `applicable = false`; call `apply_applicability()` to enrich.
 pub fn probe_all(proc: &dyn SubprocessRunner) -> Vec<ToolStatus> {
-    TOOL_REGISTRY
-        .iter()
-        .map(|entry| {
-            let binary = entry.name.split_whitespace().next().unwrap_or(entry.name);
-            let available = match entry.mode {
-                AvailabilityMode::ExitSuccess => proc.is_available(binary, entry.check_args),
-                AvailabilityMode::SpawnOk => proc
-                    .run(binary, entry.check_args, std::path::Path::new("."))
-                    .is_ok(),
-            };
-            ToolStatus {
-                name: entry.name,
-                layer: entry.layer,
-                available,
-                install: entry.install,
-                applicable: false,
-                required: false,
-                reason: String::new(),
-            }
-        })
-        .collect()
+    TOOL_REGISTRY.iter().map(|entry| {
+        let binary = entry.name.split_whitespace().next().unwrap_or(entry.name);
+        let available = match entry.mode {
+            AvailabilityMode::ExitSuccess => proc.is_available(binary, entry.check_args),
+            AvailabilityMode::SpawnOk => proc
+                .run(binary, entry.check_args, std::path::Path::new("."))
+                .is_ok(),
+        };
+        ToolStatus {
+            name: entry.name,
+            layer: entry.layer,
+            available,
+            install: entry.install,
+            applicable: false,
+            required: false,
+            reason: String::new(),
+        }
+    }).collect()
 }
 
 /// Enrich statuses with applicability information based on project and config.
 /// Modifies statuses in place; safe to call more than once (idempotent).
-pub fn apply_applicability(
-    statuses: &mut [ToolStatus],
-    project: &ProjectInfo,
-    config: &BarzelConfig,
-) {
+pub fn apply_applicability(statuses: &mut [ToolStatus], project: &ProjectInfo, config: &BarzelConfig) {
     let root = Path::new(&project.root);
     let ws_root = project.workspace_root.as_deref().map(Path::new);
     let enabled = &config.layers.enabled;
@@ -240,9 +171,7 @@ pub fn apply_applicability_workspace(
             if applicable {
                 any_applicable = true;
                 let layer_enabled = enabled.iter().any(|e| e == s.layer || s.layer == "core");
-                if layer_enabled {
-                    any_required = true;
-                }
+                if layer_enabled { any_required = true; }
                 let lang = project.language.to_string().to_lowercase();
                 contributing.push(format!("{} ({})", rel_path, lang));
             }
@@ -292,63 +221,52 @@ fn tool_applicability(
     // Lockfile detection: check package root first, then workspace root as fallback.
     // This handles the common monorepo pattern where lockfiles live at the repo root.
     let find_lock = |filename: &str| -> bool {
-        root.join(filename).exists() || workspace_root.is_some_and(|ws| ws.join(filename).exists())
+        root.join(filename).exists()
+            || workspace_root.is_some_and(|ws| ws.join(filename).exists())
     };
-    let has_pnpm_lock = find_lock("pnpm-lock.yaml");
-    let has_npm_lock = find_lock("package-lock.json");
-    let has_yarn_lock = find_lock("yarn.lock");
+    let has_pnpm_lock  = find_lock("pnpm-lock.yaml");
+    let has_npm_lock   = find_lock("package-lock.json");
+    let has_yarn_lock  = find_lock("yarn.lock");
     let no_ts_lockfile = !has_pnpm_lock && !has_npm_lock && !has_yarn_lock;
 
     match name {
         // ── Core runtimes ─────────────────────────────────────────────────────
         "cargo" => (language == Language::Rust, "Rust project"),
-        "go" => (language == Language::Go, "Go project"),
+        "go"    => (language == Language::Go,   "Go project"),
         "node" | "npx" => (language == Language::TypeScript, "TypeScript project"),
 
         // ── Logic ─────────────────────────────────────────────────────────────
-        "cargo kani" => (language == Language::Rust, "Rust project"),
-        "pytest" => (language == Language::Python, "Python project"),
-        "mypy" => (language == Language::Python, "Python project"),
+        "cargo kani"  => (language == Language::Rust,   "Rust project"),
+        "pytest"      => (language == Language::Python, "Python project"),
+        "mypy"        => (language == Language::Python, "Python project"),
 
         // ── Structural ────────────────────────────────────────────────────────
-        "cargo mutants" => (language == Language::Rust, "Rust project"),
-        "go-mutesting" => (language == Language::Go, "Go project"),
-        "mutmut" => (language == Language::Python, "Python project"),
+        "cargo mutants"  => (language == Language::Rust, "Rust project"),
+        "go-mutesting"   => (language == Language::Go,   "Go project"),
+        "mutmut"         => (language == Language::Python, "Python project"),
 
         // ── Hostile ───────────────────────────────────────────────────────────
-        "cargo audit" => (language == Language::Rust, "Rust project"),
-        "cargo fuzz" => (language == Language::Rust, "Rust project"),
-        "bandit" => (language == Language::Python, "Python project"),
-        "pip-audit" => (language == Language::Python, "Python project"),
-        "semgrep" => (true, "all projects (cross-language SAST)"),
+        "cargo audit" => (language == Language::Rust,   "Rust project"),
+        "cargo fuzz"  => (language == Language::Rust,   "Rust project"),
+        "bandit"      => (language == Language::Python, "Python project"),
+        "pip-audit"   => (language == Language::Python, "Python project"),
+        "semgrep"     => (true, "all projects (cross-language SAST)"),
 
         // Package-manager audit: lockfile detection, language-gated so non-TS projects
         // with a stray lockfile are never told to install npm/pnpm/yarn.
         "pnpm" => (
             language == Language::TypeScript && has_pnpm_lock,
-            if has_pnpm_lock {
-                "pnpm-lock.yaml detected"
-            } else {
-                "not detected"
-            },
+            if has_pnpm_lock { "pnpm-lock.yaml detected" } else { "not detected" },
         ),
-        "npm" => (
+        "npm"  => (
             language == Language::TypeScript && (has_npm_lock || no_ts_lockfile),
-            if has_npm_lock {
-                "package-lock.json detected"
-            } else if language == Language::TypeScript {
-                "TypeScript project (default package manager)"
-            } else {
-                "not detected"
-            },
+            if has_npm_lock { "package-lock.json detected" }
+            else if language == Language::TypeScript { "TypeScript project (default package manager)" }
+            else { "not detected" },
         ),
         "yarn" => (
             language == Language::TypeScript && has_yarn_lock,
-            if has_yarn_lock {
-                "yarn.lock detected"
-            } else {
-                "not detected"
-            },
+            if has_yarn_lock { "yarn.lock detected" } else { "not detected" },
         ),
 
         _ => (false, "not applicable to detected project"),
@@ -358,20 +276,15 @@ fn tool_applicability(
 /// Serialize a slice of `ToolStatus` to the agent-facing JSON shape.
 /// Includes `applicable`, `required`, and `reason` when applicability has been computed.
 pub fn tool_statuses_to_json(statuses: &[ToolStatus]) -> Vec<serde_json::Value> {
-    statuses
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "name":       s.name,
-                "layer":      s.layer,
-                "available":  s.available,
-                "install":    s.install,
-                "applicable": s.applicable,
-                "required":   s.required,
-                "reason":     s.reason,
-            })
-        })
-        .collect()
+    statuses.iter().map(|s| serde_json::json!({
+        "name":       s.name,
+        "layer":      s.layer,
+        "available":  s.available,
+        "install":    s.install,
+        "applicable": s.applicable,
+        "required":   s.required,
+        "reason":     s.reason,
+    })).collect()
 }
 
 #[cfg(test)]
@@ -393,45 +306,24 @@ mod tests {
         assert!(names.contains(&"mypy"));
         // Structural
         assert!(names.contains(&"cargo mutants"));
-        assert!(
-            names.contains(&"go-mutesting"),
-            "go-mutesting must be in registry"
-        );
+        assert!(names.contains(&"go-mutesting"), "go-mutesting must be in registry");
         assert!(names.contains(&"mutmut"));
         // Hostile
-        assert!(
-            names.contains(&"cargo audit"),
-            "cargo audit must be in registry"
-        );
-        assert!(
-            names.contains(&"pip-audit"),
-            "pip-audit must be in registry"
-        );
+        assert!(names.contains(&"cargo audit"), "cargo audit must be in registry");
+        assert!(names.contains(&"pip-audit"), "pip-audit must be in registry");
         assert!(names.contains(&"semgrep"));
         assert!(names.contains(&"bandit"));
         assert!(names.contains(&"cargo fuzz"));
-        assert!(
-            names.contains(&"npm"),
-            "npm must be in registry (backs npm audit)"
-        );
-        assert!(
-            names.contains(&"pnpm"),
-            "pnpm must be in registry (backs pnpm audit)"
-        );
-        assert!(
-            names.contains(&"yarn"),
-            "yarn must be in registry (backs yarn audit)"
-        );
+        assert!(names.contains(&"npm"),  "npm must be in registry (backs npm audit)");
+        assert!(names.contains(&"pnpm"), "pnpm must be in registry (backs pnpm audit)");
+        assert!(names.contains(&"yarn"), "yarn must be in registry (backs yarn audit)");
     }
 
     #[test]
     fn every_entry_has_nonempty_install_guidance() {
         for entry in TOOL_REGISTRY {
-            assert!(
-                !entry.install.is_empty(),
-                "entry '{}' has empty install guidance",
-                entry.name
-            );
+            assert!(!entry.install.is_empty(),
+                "entry '{}' has empty install guidance", entry.name);
         }
     }
 
@@ -439,26 +331,16 @@ mod tests {
     fn every_entry_has_valid_layer() {
         let valid = ["core", "logic", "structural", "hostile", "operational"];
         for entry in TOOL_REGISTRY {
-            assert!(
-                valid.contains(&entry.layer),
-                "entry '{}' has unknown layer '{}'",
-                entry.name,
-                entry.layer
-            );
+            assert!(valid.contains(&entry.layer),
+                "entry '{}' has unknown layer '{}'", entry.name, entry.layer);
         }
     }
 
     #[test]
     fn go_mutesting_uses_spawn_ok_mode() {
-        let entry = TOOL_REGISTRY
-            .iter()
-            .find(|e| e.name == "go-mutesting")
-            .unwrap();
-        assert_eq!(
-            entry.mode,
-            AvailabilityMode::SpawnOk,
-            "go-mutesting must use SpawnOk because --help exits non-zero"
-        );
+        let entry = TOOL_REGISTRY.iter().find(|e| e.name == "go-mutesting").unwrap();
+        assert_eq!(entry.mode, AvailabilityMode::SpawnOk,
+            "go-mutesting must use SpawnOk because --help exits non-zero");
     }
 
     #[test]
@@ -467,40 +349,23 @@ mod tests {
         // go-mutesting --help: the process spawned, but exited non-zero.
         struct NonZeroExitProc;
         impl crate::process::SubprocessRunner for NonZeroExitProc {
-            fn run(
-                &self,
-                cmd: &str,
-                _args: &[&str],
-                _cwd: &std::path::Path,
-            ) -> std::io::Result<ProcessOutput> {
+            fn run(&self, cmd: &str, _args: &[&str], _cwd: &std::path::Path)
+                -> std::io::Result<ProcessOutput>
+            {
                 if cmd == "go-mutesting" {
-                    Ok(ProcessOutput {
-                        success: false,
-                        stdout: String::new(),
-                        stderr: "usage".into(),
-                    })
+                    Ok(ProcessOutput { success: false, stdout: String::new(), stderr: "usage".into() })
                 } else {
                     // All other tools exit successfully
-                    Ok(ProcessOutput {
-                        success: true,
-                        stdout: "ok".into(),
-                        stderr: String::new(),
-                    })
+                    Ok(ProcessOutput { success: true, stdout: "ok".into(), stderr: String::new() })
                 }
             }
         }
         let statuses = probe_all(&NonZeroExitProc);
         let go_mut = statuses.iter().find(|s| s.name == "go-mutesting").unwrap();
-        assert!(
-            go_mut.available,
-            "go-mutesting must be available when spawn succeeds (SpawnOk mode)"
-        );
+        assert!(go_mut.available, "go-mutesting must be available when spawn succeeds (SpawnOk mode)");
         // A tool with ExitSuccess mode that exits non-zero is NOT available
         let cargo = statuses.iter().find(|s| s.name == "cargo").unwrap();
-        assert!(
-            cargo.available,
-            "cargo with ExitSuccess sees success=true → available"
-        );
+        assert!(cargo.available, "cargo with ExitSuccess sees success=true → available");
     }
 
     #[test]
@@ -511,10 +376,7 @@ mod tests {
         assert!(!cargo.available);
         // go-mutesting with SpawnOk is still available (spawn succeeded)
         let go_mut = statuses.iter().find(|s| s.name == "go-mutesting").unwrap();
-        assert!(
-            go_mut.available,
-            "SpawnOk tool available when proc.run returns Ok(_)"
-        );
+        assert!(go_mut.available, "SpawnOk tool available when proc.run returns Ok(_)");
     }
 
     #[test]
@@ -530,32 +392,20 @@ mod tests {
         // are unavailable — the process could not be spawned at all.
         struct IoErrorProc;
         impl crate::process::SubprocessRunner for IoErrorProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &std::path::Path,
-            ) -> std::io::Result<ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &std::path::Path) -> std::io::Result<ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
             }
         }
         let statuses = probe_all(&IoErrorProc);
-        assert!(
-            statuses.iter().all(|s| !s.available),
-            "io::Error on run() must mark every tool unavailable, including SpawnOk tools"
-        );
+        assert!(statuses.iter().all(|s| !s.available),
+            "io::Error on run() must mark every tool unavailable, including SpawnOk tools");
     }
 
     #[test]
     fn health_checks_not_in_registry() {
         let names: Vec<&str> = TOOL_REGISTRY.iter().map(|e| e.name).collect();
-        assert!(
-            !names.iter().any(|n| n.contains("health")),
-            "health checks are configured, not tool-based — must not appear in registry"
-        );
+        assert!(!names.iter().any(|n| n.contains("health")),
+            "health checks are configured, not tool-based — must not appear in registry");
     }
 
     #[test]
@@ -563,31 +413,14 @@ mod tests {
         // npm-audit is a subcommand of npm — there is no standalone binary.
         // The registry covers the package managers (npm, pnpm, yarn) instead.
         let names: Vec<&str> = TOOL_REGISTRY.iter().map(|e| e.name).collect();
-        assert!(
-            !names.contains(&"npm-audit") && !names.contains(&"npm audit"),
-            "npm-audit is a subcommand, not a standalone binary"
-        );
-        assert!(
-            names.contains(&"npm") && names.contains(&"pnpm") && names.contains(&"yarn"),
-            "npm, pnpm, and yarn must be present to cover NpmAuditRunner's three modes"
-        );
+        assert!(!names.contains(&"npm-audit") && !names.contains(&"npm audit"),
+            "npm-audit is a subcommand, not a standalone binary");
+        assert!(names.contains(&"npm") && names.contains(&"pnpm") && names.contains(&"yarn"),
+            "npm, pnpm, and yarn must be present to cover NpmAuditRunner's three modes");
     }
 
-    fn make_status(
-        name: &'static str,
-        layer: &'static str,
-        available: bool,
-        install: &'static str,
-    ) -> ToolStatus {
-        ToolStatus {
-            name,
-            layer,
-            available,
-            install,
-            applicable: false,
-            required: false,
-            reason: String::new(),
-        }
+    fn make_status(name: &'static str, layer: &'static str, available: bool, install: &'static str) -> ToolStatus {
+        ToolStatus { name, layer, available, install, applicable: false, required: false, reason: String::new() }
     }
 
     // ── applicability ─────────────────────────────────────────────────────────
@@ -604,24 +437,15 @@ mod tests {
     }
 
     fn ts_project(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::TypeScript,
-            ..rust_project(root)
-        }
+        ProjectInfo { language: Language::TypeScript, ..rust_project(root) }
     }
 
     fn python_project(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Python,
-            ..rust_project(root)
-        }
+        ProjectInfo { language: Language::Python, ..rust_project(root) }
     }
 
     fn go_project(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Go,
-            ..rust_project(root)
-        }
+        ProjectInfo { language: Language::Go, ..rust_project(root) }
     }
 
     fn default_config() -> crate::config::BarzelConfig {
@@ -629,18 +453,11 @@ mod tests {
     }
 
     fn applicable_names(statuses: &[ToolStatus]) -> Vec<&str> {
-        statuses
-            .iter()
-            .filter(|s| s.applicable)
-            .map(|s| s.name)
-            .collect()
+        statuses.iter().filter(|s| s.applicable).map(|s| s.name).collect()
     }
 
     fn missing_required_count(statuses: &[ToolStatus]) -> usize {
-        statuses
-            .iter()
-            .filter(|s| s.required && !s.available)
-            .count()
+        statuses.iter().filter(|s| s.required && !s.available).count()
     }
 
     #[test]
@@ -650,28 +467,16 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(names.contains(&"cargo"), "cargo applicable for Rust");
-        assert!(
-            names.contains(&"cargo kani"),
-            "cargo kani applicable for Rust"
-        );
-        assert!(
-            names.contains(&"cargo mutants"),
-            "cargo mutants applicable for Rust"
-        );
-        assert!(
-            names.contains(&"cargo audit"),
-            "cargo audit applicable for Rust"
-        );
-        assert!(
-            names.contains(&"cargo fuzz"),
-            "cargo fuzz applicable for Rust"
-        );
-        assert!(names.contains(&"semgrep"), "semgrep always applicable");
-        assert!(!names.contains(&"pytest"), "pytest not applicable for Rust");
-        assert!(!names.contains(&"npm"), "npm not applicable for Rust");
-        assert!(!names.contains(&"pnpm"), "pnpm not applicable for Rust");
-        assert!(!names.contains(&"yarn"), "yarn not applicable for Rust");
+        assert!(names.contains(&"cargo"),          "cargo applicable for Rust");
+        assert!(names.contains(&"cargo kani"),     "cargo kani applicable for Rust");
+        assert!(names.contains(&"cargo mutants"),  "cargo mutants applicable for Rust");
+        assert!(names.contains(&"cargo audit"),    "cargo audit applicable for Rust");
+        assert!(names.contains(&"cargo fuzz"),     "cargo fuzz applicable for Rust");
+        assert!(names.contains(&"semgrep"),        "semgrep always applicable");
+        assert!(!names.contains(&"pytest"),        "pytest not applicable for Rust");
+        assert!(!names.contains(&"npm"),           "npm not applicable for Rust");
+        assert!(!names.contains(&"pnpm"),          "pnpm not applicable for Rust");
+        assert!(!names.contains(&"yarn"),          "yarn not applicable for Rust");
     }
 
     #[test]
@@ -681,15 +486,12 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(names.contains(&"pytest"), "pytest applicable for Python");
-        assert!(names.contains(&"mypy"), "mypy applicable for Python");
-        assert!(names.contains(&"mutmut"), "mutmut applicable for Python");
-        assert!(names.contains(&"bandit"), "bandit applicable for Python");
-        assert!(
-            names.contains(&"pip-audit"),
-            "pip-audit applicable for Python"
-        );
-        assert!(!names.contains(&"cargo"), "cargo not applicable for Python");
+        assert!(names.contains(&"pytest"),    "pytest applicable for Python");
+        assert!(names.contains(&"mypy"),      "mypy applicable for Python");
+        assert!(names.contains(&"mutmut"),    "mutmut applicable for Python");
+        assert!(names.contains(&"bandit"),    "bandit applicable for Python");
+        assert!(names.contains(&"pip-audit"), "pip-audit applicable for Python");
+        assert!(!names.contains(&"cargo"),    "cargo not applicable for Python");
     }
 
     #[test]
@@ -699,13 +501,10 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(names.contains(&"go"), "go applicable for Go");
-        assert!(
-            names.contains(&"go-mutesting"),
-            "go-mutesting applicable for Go"
-        );
-        assert!(!names.contains(&"cargo"), "cargo not applicable for Go");
-        assert!(!names.contains(&"pytest"), "pytest not applicable for Go");
+        assert!(names.contains(&"go"),           "go applicable for Go");
+        assert!(names.contains(&"go-mutesting"), "go-mutesting applicable for Go");
+        assert!(!names.contains(&"cargo"),       "cargo not applicable for Go");
+        assert!(!names.contains(&"pytest"),      "pytest not applicable for Go");
     }
 
     #[test]
@@ -716,10 +515,7 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(
-            names.contains(&"pnpm"),
-            "pnpm applicable with pnpm-lock.yaml"
-        );
+        assert!(names.contains(&"pnpm"), "pnpm applicable with pnpm-lock.yaml");
         assert!(names.contains(&"node"), "node applicable for TypeScript");
     }
 
@@ -731,10 +527,7 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(
-            names.contains(&"npm"),
-            "npm applicable with package-lock.json"
-        );
+        assert!(names.contains(&"npm"), "npm applicable with package-lock.json");
     }
 
     #[test]
@@ -754,31 +547,18 @@ mod tests {
         let p = rust_project(dir.path().to_str().unwrap());
         let mut cfg = default_config();
         // Disable structural layer
-        cfg.layers.enabled = vec![
-            "logic".to_string(),
-            "hostile".to_string(),
-            "operational".to_string(),
-        ];
+        cfg.layers.enabled = vec!["logic".to_string(), "hostile".to_string(), "operational".to_string()];
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &cfg);
 
         let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
         // Still applicable (Rust project) but not required (structural disabled)
-        assert!(
-            mutants.applicable,
-            "cargo mutants still applicable for Rust even when layer disabled"
-        );
-        assert!(
-            !mutants.required,
-            "cargo mutants must not be required when structural layer is disabled"
-        );
+        assert!(mutants.applicable, "cargo mutants still applicable for Rust even when layer disabled");
+        assert!(!mutants.required,  "cargo mutants must not be required when structural layer is disabled");
 
         let audit = statuses.iter().find(|s| s.name == "cargo audit").unwrap();
         assert!(audit.applicable, "cargo audit applicable for Rust");
-        assert!(
-            audit.required,
-            "cargo audit required when hostile is enabled"
-        );
+        assert!(audit.required,   "cargo audit required when hostile is enabled");
     }
 
     #[test]
@@ -789,43 +569,21 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(
-            names.contains(&"npm"),
-            "npm is the default applicable package manager"
-        );
-        assert!(
-            !names.contains(&"pnpm"),
-            "pnpm not applicable without pnpm-lock.yaml"
-        );
-        assert!(
-            !names.contains(&"yarn"),
-            "yarn not applicable without yarn.lock"
-        );
+        assert!(names.contains(&"npm"),  "npm is the default applicable package manager");
+        assert!(!names.contains(&"pnpm"), "pnpm not applicable without pnpm-lock.yaml");
+        assert!(!names.contains(&"yarn"), "yarn not applicable without yarn.lock");
     }
 
     #[test]
     fn semgrep_applicable_for_all_languages() {
         let dir = tempfile::tempdir().unwrap();
-        for lang in [
-            Language::Rust,
-            Language::Python,
-            Language::TypeScript,
-            Language::Go,
-        ] {
-            let p = ProjectInfo {
-                language: lang,
-                ..rust_project(dir.path().to_str().unwrap())
-            };
+        for lang in [Language::Rust, Language::Python, Language::TypeScript, Language::Go] {
+            let p = ProjectInfo { language: lang, ..rust_project(dir.path().to_str().unwrap()) };
             let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
             apply_applicability(&mut statuses, &p, &default_config());
             assert!(
-                statuses
-                    .iter()
-                    .find(|s| s.name == "semgrep")
-                    .map(|s| s.applicable)
-                    .unwrap_or(false),
-                "semgrep must be applicable for {:?}",
-                lang
+                statuses.iter().find(|s| s.name == "semgrep").map(|s| s.applicable).unwrap_or(false),
+                "semgrep must be applicable for {:?}", lang
             );
         }
     }
@@ -838,18 +596,9 @@ mod tests {
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability(&mut statuses, &p, &default_config());
         let names = applicable_names(&statuses);
-        assert!(
-            !names.contains(&"npm"),
-            "npm must not be applicable for Rust even with package-lock.json"
-        );
-        assert!(
-            !names.contains(&"pnpm"),
-            "pnpm must not be applicable for Rust"
-        );
-        assert!(
-            !names.contains(&"yarn"),
-            "yarn must not be applicable for Rust"
-        );
+        assert!(!names.contains(&"npm"),  "npm must not be applicable for Rust even with package-lock.json");
+        assert!(!names.contains(&"pnpm"), "pnpm must not be applicable for Rust");
+        assert!(!names.contains(&"yarn"), "yarn must not be applicable for Rust");
     }
 
     #[test]
@@ -862,39 +611,27 @@ mod tests {
 
         let count = missing_required_count(&statuses);
         // Only required (applicable + layer enabled) AND unavailable tools should count
-        let expected = statuses
-            .iter()
-            .filter(|s| s.required && !s.available)
-            .count();
+        let expected = statuses.iter().filter(|s| s.required && !s.available).count();
         assert_eq!(count, expected);
         // Sanity: applicable-but-not-required tools do not inflate the count
-        let applicable_unavailable = statuses
-            .iter()
-            .filter(|s| s.applicable && !s.available)
-            .count();
-        assert!(
-            count <= applicable_unavailable,
-            "count must not exceed applicable-unavailable"
-        );
+        let applicable_unavailable = statuses.iter().filter(|s| s.applicable && !s.available).count();
+        assert!(count <= applicable_unavailable, "count must not exceed applicable-unavailable");
     }
 
     // ── workspace aggregation ─────────────────────────────────────────────────
 
-    fn members_rust_and_ts(
-        rust_root: &str,
-        ts_root: &str,
-    ) -> Vec<(String, crate::detect::ProjectInfo)> {
+    fn members_rust_and_ts(rust_root: &str, ts_root: &str) -> Vec<(String, crate::detect::ProjectInfo)> {
         vec![
             ("crates/api".to_string(), rust_project(rust_root)),
-            ("apps/web".to_string(), ts_project(ts_root)),
+            ("apps/web".to_string(),   ts_project(ts_root)),
         ]
     }
 
     #[test]
     fn workspace_aggregates_required_from_rust_and_ts_members() {
         let rust_dir = tempfile::tempdir().unwrap();
-        let ts_dir = tempfile::tempdir().unwrap();
-        let members = members_rust_and_ts(
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
             rust_dir.path().to_str().unwrap(),
             ts_dir.path().to_str().unwrap(),
         );
@@ -903,43 +640,23 @@ mod tests {
 
         // Rust tools must be applicable/required
         let cargo = statuses.iter().find(|s| s.name == "cargo").unwrap();
-        assert!(
-            cargo.applicable && cargo.required,
-            "cargo required for rust member"
-        );
-        assert!(
-            cargo.reason.contains("crates/api"),
-            "reason names the rust member"
-        );
+        assert!(cargo.applicable && cargo.required, "cargo required for rust member");
+        assert!(cargo.reason.contains("crates/api"), "reason names the rust member");
 
         // TS tools must be applicable/required
         let node = statuses.iter().find(|s| s.name == "node").unwrap();
-        assert!(
-            node.applicable && node.required,
-            "node required for ts member"
-        );
-        assert!(
-            node.reason.contains("apps/web"),
-            "reason names the ts member"
-        );
+        assert!(node.applicable && node.required, "node required for ts member");
+        assert!(node.reason.contains("apps/web"), "reason names the ts member");
 
         // semgrep required for both
         let semgrep = statuses.iter().find(|s| s.name == "semgrep").unwrap();
-        assert!(
-            semgrep.applicable && semgrep.required,
-            "semgrep required for all members"
-        );
-        assert!(
-            semgrep.reason.contains("crates/api") && semgrep.reason.contains("apps/web"),
-            "semgrep reason lists all members"
-        );
+        assert!(semgrep.applicable && semgrep.required, "semgrep required for all members");
+        assert!(semgrep.reason.contains("crates/api") && semgrep.reason.contains("apps/web"),
+            "semgrep reason lists all members");
 
         // Python tools not applicable in this workspace
         let pytest = statuses.iter().find(|s| s.name == "pytest").unwrap();
-        assert!(
-            !pytest.applicable,
-            "pytest not applicable in rust+ts workspace"
-        );
+        assert!(!pytest.applicable, "pytest not applicable in rust+ts workspace");
     }
 
     #[test]
@@ -958,49 +675,33 @@ mod tests {
         // not because of the Rust member's stray package-lock.json
         let npm = statuses.iter().find(|s| s.name == "npm").unwrap();
         assert!(npm.applicable, "npm applicable due to TS member");
-        assert!(
-            npm.reason.contains("apps/web"),
-            "npm reason must reference TS member"
-        );
-        assert!(
-            !npm.reason.contains("crates/api"),
-            "npm reason must not reference Rust member"
-        );
+        assert!(npm.reason.contains("apps/web"), "npm reason must reference TS member");
+        assert!(!npm.reason.contains("crates/api"), "npm reason must not reference Rust member");
     }
 
     #[test]
     fn workspace_disabled_layer_means_applicable_but_not_required() {
         let rust_dir = tempfile::tempdir().unwrap();
-        let ts_dir = tempfile::tempdir().unwrap();
-        let members = members_rust_and_ts(
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
             rust_dir.path().to_str().unwrap(),
             ts_dir.path().to_str().unwrap(),
         );
         let mut cfg = default_config();
-        cfg.layers.enabled = vec![
-            "logic".to_string(),
-            "hostile".to_string(),
-            "operational".to_string(),
-        ];
+        cfg.layers.enabled = vec!["logic".to_string(), "hostile".to_string(), "operational".to_string()];
         let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
         apply_applicability_workspace(&mut statuses, &members, &cfg);
 
         let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
-        assert!(
-            mutants.applicable,
-            "cargo mutants still applicable for rust member"
-        );
-        assert!(
-            !mutants.required,
-            "cargo mutants not required when structural layer disabled"
-        );
+        assert!(mutants.applicable, "cargo mutants still applicable for rust member");
+        assert!(!mutants.required, "cargo mutants not required when structural layer disabled");
     }
 
     #[test]
     fn workspace_missing_count_only_counts_required_and_unavailable() {
         let rust_dir = tempfile::tempdir().unwrap();
-        let ts_dir = tempfile::tempdir().unwrap();
-        let members = members_rust_and_ts(
+        let ts_dir   = tempfile::tempdir().unwrap();
+        let members  = members_rust_and_ts(
             rust_dir.path().to_str().unwrap(),
             ts_dir.path().to_str().unwrap(),
         );
@@ -1008,15 +709,9 @@ mod tests {
         apply_applicability_workspace(&mut statuses, &members, &default_config());
 
         let count = missing_required_count(&statuses);
-        let expected = statuses
-            .iter()
-            .filter(|s| s.required && !s.available)
-            .count();
+        let expected = statuses.iter().filter(|s| s.required && !s.available).count();
         assert_eq!(count, expected);
-        let applicable_unavailable = statuses
-            .iter()
-            .filter(|s| s.applicable && !s.available)
-            .count();
+        let applicable_unavailable = statuses.iter().filter(|s| s.applicable && !s.available).count();
         assert!(count <= applicable_unavailable);
     }
 
@@ -1034,16 +729,13 @@ mod tests {
         apply_applicability_workspace(&mut statuses, &members, &default_config());
 
         let pnpm = statuses.iter().find(|s| s.name == "pnpm").unwrap();
-        assert!(
-            pnpm.applicable,
-            "pnpm applicable via workspace-root pnpm-lock.yaml"
-        );
+        assert!(pnpm.applicable, "pnpm applicable via workspace-root pnpm-lock.yaml");
     }
 
     #[test]
     fn tool_statuses_to_json_shape() {
         let statuses = vec![
-            make_status("cargo", "core", true, "https://rustup.rs"),
+            make_status("cargo",   "core",    true,  "https://rustup.rs"),
             make_status("semgrep", "hostile", false, "pip install semgrep"),
         ];
         let json = tool_statuses_to_json(&statuses);
@@ -1053,9 +745,7 @@ mod tests {
         assert_eq!(json[0]["available"].as_bool(), Some(true));
         assert_eq!(json[0]["install"].as_str(), Some("https://rustup.rs"));
         assert_eq!(json[1]["available"].as_bool(), Some(false));
-        assert!(
-            !json[1]["install"].as_str().unwrap_or("").is_empty(),
-            "unavailable tool must include non-empty install guidance"
-        );
+        assert!(!json[1]["install"].as_str().unwrap_or("").is_empty(),
+            "unavailable tool must include non-empty install guidance");
     }
 }

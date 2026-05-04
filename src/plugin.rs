@@ -45,18 +45,10 @@ mod tests {
 
     struct MinimalRunner;
     impl TestRunner for MinimalRunner {
-        fn name(&self) -> &'static str {
-            "minimal"
-        }
-        fn layer(&self) -> Layer {
-            Layer::Logic
-        }
-        fn is_available(&self, _: &ProjectInfo) -> bool {
-            false
-        }
-        fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
-            unreachable!()
-        }
+        fn name(&self) -> &'static str { "minimal" }
+        fn layer(&self) -> Layer { Layer::Logic }
+        fn is_available(&self, _: &ProjectInfo) -> bool { false }
+        fn run(&self, _: &ProjectInfo) -> Result<LayerResult> { unreachable!() }
         // Uses default skip_message and parse_results
     }
 

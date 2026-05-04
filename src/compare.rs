@@ -25,17 +25,13 @@ fn status_worsened(from: LayerStatus, to: LayerStatus) -> bool {
     // Skipped is neutral in both directions. If a runner transitions from Skipped
     // to Fail, NewFinding regressions will surface any Critical/High issues found —
     // a StatusWorsened on top would be contradictory and redundant.
-    if from == LayerStatus::Skipped || to == LayerStatus::Skipped {
-        return false;
-    }
+    if from == LayerStatus::Skipped || to == LayerStatus::Skipped { return false; }
     status_rank(to) > status_rank(from)
 }
 
 fn status_improved(from: LayerStatus, to: LayerStatus) -> bool {
     // Skipped is neutral in both directions
-    if from == LayerStatus::Skipped || to == LayerStatus::Skipped {
-        return false;
-    }
+    if from == LayerStatus::Skipped || to == LayerStatus::Skipped { return false; }
     status_rank(to) < status_rank(from)
 }
 
@@ -201,25 +197,15 @@ pub fn compare_reports(baseline: &BarzelReport, head: &BarzelReport) -> ReportCo
 
     // Ordered union of (layer_name, runner) pairs from both reports
     let mut layer_keys: Vec<(String, String)> = Vec::new();
-    for l in &baseline.layers {
-        layer_keys.push((l.name.clone(), l.runner.clone()));
-    }
+    for l in &baseline.layers { layer_keys.push((l.name.clone(), l.runner.clone())); }
     for l in &head.layers {
         let key = (l.name.clone(), l.runner.clone());
-        if !layer_keys.contains(&key) {
-            layer_keys.push(key);
-        }
+        if !layer_keys.contains(&key) { layer_keys.push(key); }
     }
 
     for (layer_name, runner) in &layer_keys {
-        let base_layer = baseline
-            .layers
-            .iter()
-            .find(|l| &l.name == layer_name && &l.runner == runner);
-        let head_layer = head
-            .layers
-            .iter()
-            .find(|l| &l.name == layer_name && &l.runner == runner);
+        let base_layer = baseline.layers.iter().find(|l| &l.name == layer_name && &l.runner == runner);
+        let head_layer = head.layers.iter().find(|l| &l.name == layer_name && &l.runner == runner);
 
         let status_from = base_layer.map(|l| l.status);
         let status_to = head_layer.map(|l| l.status);
@@ -236,32 +222,24 @@ pub fn compare_reports(baseline: &BarzelReport, head: &BarzelReport) -> ReportCo
         let resolved_keys: Vec<&FindingKey> = base_keys.difference(&head_keys).collect();
 
         // Build FindingChange lists — look up original Finding for full context
-        let mut new_findings: Vec<FindingChange> = new_keys
-            .iter()
-            .map(|k| {
-                let f =
-                    head_layer.and_then(|l| l.findings.iter().find(|f| FindingKey::from(f) == **k));
-                FindingChange {
-                    code: k.code.clone(),
-                    severity: f.map(|f| f.severity).unwrap_or(Severity::Info),
-                    location: k.location.clone(),
-                    message: k.message.clone(),
-                }
-            })
-            .collect();
-        let mut resolved_findings: Vec<FindingChange> = resolved_keys
-            .iter()
-            .map(|k| {
-                let f =
-                    base_layer.and_then(|l| l.findings.iter().find(|f| FindingKey::from(f) == **k));
-                FindingChange {
-                    code: k.code.clone(),
-                    severity: f.map(|f| f.severity).unwrap_or(Severity::Info),
-                    location: k.location.clone(),
-                    message: k.message.clone(),
-                }
-            })
-            .collect();
+        let mut new_findings: Vec<FindingChange> = new_keys.iter().map(|k| {
+            let f = head_layer.and_then(|l| l.findings.iter().find(|f| FindingKey::from(f) == **k));
+            FindingChange {
+                code: k.code.clone(),
+                severity: f.map(|f| f.severity).unwrap_or(Severity::Info),
+                location: k.location.clone(),
+                message: k.message.clone(),
+            }
+        }).collect();
+        let mut resolved_findings: Vec<FindingChange> = resolved_keys.iter().map(|k| {
+            let f = base_layer.and_then(|l| l.findings.iter().find(|f| FindingKey::from(f) == **k));
+            FindingChange {
+                code: k.code.clone(),
+                severity: f.map(|f| f.severity).unwrap_or(Severity::Info),
+                location: k.location.clone(),
+                message: k.message.clone(),
+            }
+        }).collect();
 
         // Sort for determinism
         sort_finding_changes(&mut new_findings);
@@ -280,19 +258,9 @@ pub fn compare_reports(baseline: &BarzelReport, head: &BarzelReport) -> ReportCo
         // Status regressions / improvements
         if let (Some(from), Some(to)) = (status_from, status_to) {
             if status_worsened(from, to) {
-                regressions.push(Regression::StatusWorsened {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                });
+                regressions.push(Regression::StatusWorsened { layer: layer_name.clone(), runner: runner.clone(), from, to });
             } else if status_improved(from, to) {
-                improvements.push(Improvement::StatusImproved {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                });
+                improvements.push(Improvement::StatusImproved { layer: layer_name.clone(), runner: runner.clone(), from, to });
             }
         }
 
@@ -326,48 +294,20 @@ pub fn compare_reports(baseline: &BarzelReport, head: &BarzelReport) -> ReportCo
             let from = base_layer.and_then(|l| l.metrics.coverage).unwrap_or(0.0);
             let to = head_layer.and_then(|l| l.metrics.coverage).unwrap_or(0.0);
             if delta < -0.1 {
-                regressions.push(Regression::CoverageDrop {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                    delta,
-                });
+                regressions.push(Regression::CoverageDrop { layer: layer_name.clone(), runner: runner.clone(), from, to, delta });
             } else if delta > 0.1 {
-                improvements.push(Improvement::CoverageImproved {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                    delta,
-                });
+                improvements.push(Improvement::CoverageImproved { layer: layer_name.clone(), runner: runner.clone(), from, to, delta });
             }
         }
 
         // Mutation score
         if let Some(delta) = mutation_score_delta {
-            let from = base_layer
-                .and_then(|l| l.metrics.mutation_score)
-                .unwrap_or(0.0);
-            let to = head_layer
-                .and_then(|l| l.metrics.mutation_score)
-                .unwrap_or(0.0);
+            let from = base_layer.and_then(|l| l.metrics.mutation_score).unwrap_or(0.0);
+            let to = head_layer.and_then(|l| l.metrics.mutation_score).unwrap_or(0.0);
             if delta < -0.1 {
-                regressions.push(Regression::MutationScoreDrop {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                    delta,
-                });
+                regressions.push(Regression::MutationScoreDrop { layer: layer_name.clone(), runner: runner.clone(), from, to, delta });
             } else if delta > 0.1 {
-                improvements.push(Improvement::MutationScoreImproved {
-                    layer: layer_name.clone(),
-                    runner: runner.clone(),
-                    from,
-                    to,
-                    delta,
-                });
+                improvements.push(Improvement::MutationScoreImproved { layer: layer_name.clone(), runner: runner.clone(), from, to, delta });
             }
         }
 
@@ -410,69 +350,27 @@ pub fn compare_reports(baseline: &BarzelReport, head: &BarzelReport) -> ReportCo
 }
 
 fn delta_opt(base: Option<f64>, head: Option<f64>) -> Option<f64> {
-    match (base, head) {
-        (Some(b), Some(h)) => Some(h - b),
-        _ => None,
-    }
+    match (base, head) { (Some(b), Some(h)) => Some(h - b), _ => None }
 }
 
 fn severity_priority(s: Severity) -> u8 {
-    match s {
-        Severity::Critical => 0,
-        Severity::High => 1,
-        Severity::Medium => 2,
-        Severity::Low => 3,
-        Severity::Info => 4,
-    }
+    match s { Severity::Critical => 0, Severity::High => 1, Severity::Medium => 2, Severity::Low => 3, Severity::Info => 4 }
 }
 
 fn sort_finding_changes(v: &mut [FindingChange]) {
-    v.sort_by_key(|f| {
-        (
-            severity_priority(f.severity),
-            f.code.clone(),
-            f.location.clone().unwrap_or_default(),
-        )
-    });
+    v.sort_by_key(|f| (severity_priority(f.severity), f.code.clone(), f.location.clone().unwrap_or_default()));
 }
 
 fn regression_sort_key(r: &Regression) -> (u8, String, String, String, String) {
     match r {
-        Regression::NewFinding {
-            severity,
-            layer,
-            runner,
-            code,
-            location,
-            ..
-        } => (
-            severity_priority(*severity),
-            layer.clone(),
-            runner.clone(),
-            code.clone(),
-            location.clone().unwrap_or_default(),
-        ),
-        Regression::StatusWorsened { layer, runner, .. } => (
-            0,
-            layer.clone(),
-            runner.clone(),
-            String::new(),
-            String::new(),
-        ),
-        Regression::CoverageDrop { layer, runner, .. } => (
-            1,
-            layer.clone(),
-            runner.clone(),
-            "coverage".to_string(),
-            String::new(),
-        ),
-        Regression::MutationScoreDrop { layer, runner, .. } => (
-            1,
-            layer.clone(),
-            runner.clone(),
-            "mutation_score".to_string(),
-            String::new(),
-        ),
+        Regression::NewFinding { severity, layer, runner, code, location, .. } =>
+            (severity_priority(*severity), layer.clone(), runner.clone(), code.clone(), location.clone().unwrap_or_default()),
+        Regression::StatusWorsened { layer, runner, .. } =>
+            (0, layer.clone(), runner.clone(), String::new(), String::new()),
+        Regression::CoverageDrop { layer, runner, .. } =>
+            (1, layer.clone(), runner.clone(), "coverage".to_string(), String::new()),
+        Regression::MutationScoreDrop { layer, runner, .. } =>
+            (1, layer.clone(), runner.clone(), "mutation_score".to_string(), String::new()),
     }
 }
 
@@ -494,42 +392,20 @@ mod tests {
     }
 
     fn layer(name: &str, runner: &str, status: LayerStatus, findings: Vec<Finding>) -> LayerResult {
-        LayerResult {
-            name: name.to_string(),
-            runner: runner.to_string(),
-            status,
-            findings,
-            metrics: LayerMetrics::default(),
-            duration_ms: 0,
-        }
+        LayerResult { name: name.to_string(), runner: runner.to_string(), status, findings, metrics: LayerMetrics::default(), duration_ms: 0 }
     }
 
-    fn layer_with_metrics(
-        name: &str,
-        runner: &str,
-        status: LayerStatus,
-        coverage: Option<f64>,
-        mutation_score: Option<f64>,
-    ) -> LayerResult {
+    fn layer_with_metrics(name: &str, runner: &str, status: LayerStatus, coverage: Option<f64>, mutation_score: Option<f64>) -> LayerResult {
         LayerResult {
-            name: name.to_string(),
-            runner: runner.to_string(),
-            status,
-            findings: vec![],
-            metrics: LayerMetrics {
-                coverage,
-                mutation_score,
-                ..Default::default()
-            },
+            name: name.to_string(), runner: runner.to_string(), status, findings: vec![],
+            metrics: LayerMetrics { coverage, mutation_score, ..Default::default() },
             duration_ms: 0,
         }
     }
 
     fn finding(code: &str, severity: Severity, location: &str) -> Finding {
         Finding {
-            severity,
-            code: code.to_string(),
-            message: format!("{} issue at {}", code, location),
+            severity, code: code.to_string(), message: format!("{} issue at {}", code, location),
             location: Some(location.to_string()),
             reproduce_cmd: Some(format!("grep {} {}", code, location)),
             suggestion: None,
@@ -538,9 +414,7 @@ mod tests {
 
     fn make_report(layers: Vec<LayerResult>) -> BarzelReport {
         let mut r = BarzelReport::new(project());
-        for l in layers {
-            r.add_layer(l);
-        }
+        for l in layers { r.add_layer(l); }
         r
     }
 
@@ -550,10 +424,7 @@ mod tests {
     fn identical_reports_verdict_unchanged() {
         let baseline = make_report(vec![layer("logic", "pytest", LayerStatus::Pass, vec![])]);
         let head = make_report(vec![layer("logic", "pytest", LayerStatus::Pass, vec![])]);
-        assert_eq!(
-            compare_reports(&baseline, &head).verdict,
-            Verdict::Unchanged
-        );
+        assert_eq!(compare_reports(&baseline, &head).verdict, Verdict::Unchanged);
     }
 
     // ── finding identity uses location ────────────────────────────────────────
@@ -561,20 +432,12 @@ mod tests {
     #[test]
     fn same_code_different_location_are_two_findings() {
         // Two instances of the same code at different file locations must be treated independently.
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![finding("SQL_INJECTION", Severity::Critical, "src/a.py:10")],
-        )]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![
-                finding("SQL_INJECTION", Severity::Critical, "src/b.py:42"), // different file
-            ],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("SQL_INJECTION", Severity::Critical, "src/a.py:10"),
+        ])]);
+        let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("SQL_INJECTION", Severity::Critical, "src/b.py:42"), // different file
+        ])]);
         let cmp = compare_reports(&baseline, &head);
         // Old location resolved, new location appeared → both regression and improvement
         assert!(cmp.regressions.iter().any(|r| matches!(
@@ -588,22 +451,11 @@ mod tests {
     #[test]
     fn same_code_same_location_is_unchanged() {
         let f = finding("EVAL_LLM_OUTPUT", Severity::Critical, "agent.py:5");
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "ai-sec",
-            LayerStatus::Fail,
-            vec![f.clone()],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![f.clone()])]);
         let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![f])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(cmp
-            .regressions
-            .iter()
-            .all(|r| !matches!(r, Regression::NewFinding { .. })));
-        assert!(cmp
-            .improvements
-            .iter()
-            .all(|i| !matches!(i, Improvement::FindingResolved { .. })));
+        assert!(cmp.regressions.iter().all(|r| !matches!(r, Regression::NewFinding { .. })));
+        assert!(cmp.improvements.iter().all(|i| !matches!(i, Improvement::FindingResolved { .. })));
     }
 
     // ── regressions ───────────────────────────────────────────────────────────
@@ -611,16 +463,9 @@ mod tests {
     #[test]
     fn new_critical_finding_is_regression() {
         let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![finding(
-                "SQL_INJECTION",
-                Severity::Critical,
-                "src/app.py:10",
-            )],
-        )]);
+        let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("SQL_INJECTION", Severity::Critical, "src/app.py:10"),
+        ])]);
         let cmp = compare_reports(&baseline, &head);
         assert_eq!(cmp.verdict, Verdict::Regressed);
         assert!(cmp.regressions.iter().any(|r| matches!(
@@ -631,46 +476,24 @@ mod tests {
     #[test]
     fn new_high_finding_is_regression() {
         let baseline = make_report(vec![layer("hostile", "semgrep", LayerStatus::Pass, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "semgrep",
-            LayerStatus::Partial,
-            vec![finding("HARDCODED_SECRET", Severity::High, "config.py:3")],
-        )]);
+        let head = make_report(vec![layer("hostile", "semgrep", LayerStatus::Partial, vec![
+            finding("HARDCODED_SECRET", Severity::High, "config.py:3"),
+        ])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(cmp.regressions.iter().any(|r| matches!(
-            r,
-            Regression::NewFinding {
-                severity: Severity::High,
-                ..
-            }
-        )));
+        assert!(cmp.regressions.iter().any(|r| matches!(r, Regression::NewFinding { severity: Severity::High, .. })));
     }
 
     #[test]
     fn new_medium_finding_not_in_regressions() {
         let baseline = make_report(vec![layer("hostile", "semgrep", LayerStatus::Pass, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "semgrep",
-            LayerStatus::Partial,
-            vec![finding("MISSING_VALIDATION", Severity::Medium, "api.py:15")],
-        )]);
+        let head = make_report(vec![layer("hostile", "semgrep", LayerStatus::Partial, vec![
+            finding("MISSING_VALIDATION", Severity::Medium, "api.py:15"),
+        ])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(!cmp
-            .regressions
-            .iter()
-            .any(|r| matches!(r, Regression::NewFinding { .. })));
+        assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::NewFinding { .. })));
         // But visible in layer_changes
-        let lc = cmp
-            .layer_changes
-            .iter()
-            .find(|l| l.layer == "hostile")
-            .unwrap();
-        assert!(lc
-            .new_findings
-            .iter()
-            .any(|f| f.code == "MISSING_VALIDATION"));
+        let lc = cmp.layer_changes.iter().find(|l| l.layer == "hostile").unwrap();
+        assert!(lc.new_findings.iter().any(|f| f.code == "MISSING_VALIDATION"));
     }
 
     #[test]
@@ -679,12 +502,7 @@ mod tests {
         let head = make_report(vec![layer("logic", "pytest", LayerStatus::Fail, vec![])]);
         let cmp = compare_reports(&baseline, &head);
         assert!(cmp.regressions.iter().any(|r| matches!(
-            r,
-            Regression::StatusWorsened {
-                from: LayerStatus::Pass,
-                to: LayerStatus::Fail,
-                ..
-            }
+            r, Regression::StatusWorsened { from: LayerStatus::Pass, to: LayerStatus::Fail, .. }
         )));
     }
 
@@ -693,86 +511,47 @@ mod tests {
         let baseline = make_report(vec![layer("logic", "pytest", LayerStatus::Pass, vec![])]);
         let head = make_report(vec![layer("logic", "pytest", LayerStatus::Partial, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(cmp
-            .regressions
-            .iter()
-            .any(|r| matches!(r, Regression::StatusWorsened { .. })));
+        assert!(cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })));
     }
 
     #[test]
     fn skipped_replacing_pass_is_not_regression() {
         // Conservative: Skipped might mean runner was not applicable (e.g. no AI deps)
         let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Pass, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "ai-sec",
-            LayerStatus::Skipped,
-            vec![],
-        )]);
+        let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(
-            !cmp.regressions
-                .iter()
-                .any(|r| matches!(r, Regression::StatusWorsened { .. })),
-            "Skipped replacing Pass must not be flagged as regression"
-        );
+        assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
+            "Skipped replacing Pass must not be flagged as regression");
     }
 
     #[test]
     fn skipped_replacing_fail_is_not_regression() {
         let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "ai-sec",
-            LayerStatus::Skipped,
-            vec![],
-        )]);
+        let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(
-            !cmp.regressions
-                .iter()
-                .any(|r| matches!(r, Regression::StatusWorsened { .. })),
-            "Skipped must never be considered worse than Fail"
-        );
+        assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
+            "Skipped must never be considered worse than Fail");
     }
 
     #[test]
     fn skipped_to_fail_is_not_status_regression() {
         // A runner transitioning from Skipped to Fail should not produce StatusWorsened —
         // NewFinding regressions will surface any Critical/High issues instead.
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "ai-sec",
-            LayerStatus::Skipped,
-            vec![],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
         let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(
-            !cmp.regressions
-                .iter()
-                .any(|r| matches!(r, Regression::StatusWorsened { .. })),
-            "Skipped → Fail must not produce StatusWorsened"
-        );
+        assert!(!cmp.regressions.iter().any(|r| matches!(r, Regression::StatusWorsened { .. })),
+            "Skipped → Fail must not produce StatusWorsened");
     }
 
     #[test]
     fn fail_to_skipped_is_not_improvement() {
         // Skipped means the runner became non-applicable, not that the problem was fixed.
         let baseline = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Fail, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "ai-sec",
-            LayerStatus::Skipped,
-            vec![],
-        )]);
+        let head = make_report(vec![layer("hostile", "ai-sec", LayerStatus::Skipped, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(
-            !cmp.improvements
-                .iter()
-                .any(|i| matches!(i, Improvement::StatusImproved { .. })),
-            "Fail → Skipped must not be counted as an improvement"
-        );
+        assert!(!cmp.improvements.iter().any(|i| matches!(i, Improvement::StatusImproved { .. })),
+            "Fail → Skipped must not be counted as an improvement");
     }
 
     #[test]
@@ -780,30 +559,14 @@ mod tests {
         let baseline = make_report(vec![layer("logic", "pytest", LayerStatus::Partial, vec![])]);
         let head = make_report(vec![layer("logic", "pytest", LayerStatus::Skipped, vec![])]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(
-            !cmp.improvements
-                .iter()
-                .any(|i| matches!(i, Improvement::StatusImproved { .. })),
-            "Partial → Skipped must not be counted as an improvement"
-        );
+        assert!(!cmp.improvements.iter().any(|i| matches!(i, Improvement::StatusImproved { .. })),
+            "Partial → Skipped must not be counted as an improvement");
     }
 
     #[test]
     fn coverage_drop_is_regression() {
-        let baseline = make_report(vec![layer_with_metrics(
-            "logic",
-            "pytest",
-            LayerStatus::Pass,
-            Some(90.0),
-            None,
-        )]);
-        let head = make_report(vec![layer_with_metrics(
-            "logic",
-            "pytest",
-            LayerStatus::Pass,
-            Some(70.0),
-            None,
-        )]);
+        let baseline = make_report(vec![layer_with_metrics("logic", "pytest", LayerStatus::Pass, Some(90.0), None)]);
+        let head = make_report(vec![layer_with_metrics("logic", "pytest", LayerStatus::Pass, Some(70.0), None)]);
         let cmp = compare_reports(&baseline, &head);
         assert!(cmp.regressions.iter().any(|r| matches!(
             r, Regression::CoverageDrop { from, to, .. }
@@ -813,41 +576,19 @@ mod tests {
 
     #[test]
     fn mutation_score_drop_is_regression() {
-        let baseline = make_report(vec![layer_with_metrics(
-            "structural",
-            "mutmut",
-            LayerStatus::Pass,
-            None,
-            Some(95.0),
-        )]);
-        let head = make_report(vec![layer_with_metrics(
-            "structural",
-            "mutmut",
-            LayerStatus::Partial,
-            None,
-            Some(70.0),
-        )]);
+        let baseline = make_report(vec![layer_with_metrics("structural", "mutmut", LayerStatus::Pass, None, Some(95.0))]);
+        let head = make_report(vec![layer_with_metrics("structural", "mutmut", LayerStatus::Partial, None, Some(70.0))]);
         let cmp = compare_reports(&baseline, &head);
-        assert!(cmp
-            .regressions
-            .iter()
-            .any(|r| matches!(r, Regression::MutationScoreDrop { .. })));
+        assert!(cmp.regressions.iter().any(|r| matches!(r, Regression::MutationScoreDrop { .. })));
     }
 
     // ── improvements ─────────────────────────────────────────────────────────
 
     #[test]
     fn resolved_critical_finding_is_improvement() {
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![finding(
-                "SQL_INJECTION",
-                Severity::Critical,
-                "src/app.py:10",
-            )],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("SQL_INJECTION", Severity::Critical, "src/app.py:10"),
+        ])]);
         let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
         let cmp = compare_reports(&baseline, &head);
         assert_eq!(cmp.verdict, Verdict::Improved);
@@ -862,59 +603,29 @@ mod tests {
         let head = make_report(vec![layer("logic", "pytest", LayerStatus::Pass, vec![])]);
         let cmp = compare_reports(&baseline, &head);
         assert!(cmp.improvements.iter().any(|i| matches!(
-            i,
-            Improvement::StatusImproved {
-                from: LayerStatus::Fail,
-                to: LayerStatus::Pass,
-                ..
-            }
+            i, Improvement::StatusImproved { from: LayerStatus::Fail, to: LayerStatus::Pass, .. }
         )));
     }
 
     #[test]
     fn coverage_increase_is_improvement() {
-        let baseline = make_report(vec![layer_with_metrics(
-            "logic",
-            "pytest",
-            LayerStatus::Pass,
-            Some(60.0),
-            None,
-        )]);
-        let head = make_report(vec![layer_with_metrics(
-            "logic",
-            "pytest",
-            LayerStatus::Pass,
-            Some(85.0),
-            None,
-        )]);
-        assert!(compare_reports(&baseline, &head)
-            .improvements
-            .iter()
-            .any(|i| matches!(i, Improvement::CoverageImproved { .. })));
+        let baseline = make_report(vec![layer_with_metrics("logic", "pytest", LayerStatus::Pass, Some(60.0), None)]);
+        let head = make_report(vec![layer_with_metrics("logic", "pytest", LayerStatus::Pass, Some(85.0), None)]);
+        assert!(compare_reports(&baseline, &head).improvements.iter().any(|i| matches!(i, Improvement::CoverageImproved { .. })));
     }
 
     // ── summary delta ─────────────────────────────────────────────────────────
 
     #[test]
     fn summary_delta_counts_correctly() {
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![
-                finding("A", Severity::Critical, "x.py:1"),
-                finding("B", Severity::High, "x.py:2"),
-            ],
-        )]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Partial,
-            vec![
-                finding("B", Severity::High, "x.py:2"),
-                finding("C", Severity::Medium, "x.py:3"),
-            ],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("A", Severity::Critical, "x.py:1"),
+            finding("B", Severity::High, "x.py:2"),
+        ])]);
+        let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Partial, vec![
+            finding("B", Severity::High, "x.py:2"),
+            finding("C", Severity::Medium, "x.py:3"),
+        ])]);
         let cmp = compare_reports(&baseline, &head);
         assert_eq!(cmp.summary_delta.critical, -1);
         assert_eq!(cmp.summary_delta.high, 0);
@@ -927,28 +638,17 @@ mod tests {
     #[test]
     fn regressions_sorted_critical_before_high() {
         let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
-        let head = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![
-                finding("HIGH_ISSUE", Severity::High, "a.py:1"),
-                finding("CRITICAL_ISSUE", Severity::Critical, "b.py:2"),
-            ],
-        )]);
+        let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("HIGH_ISSUE", Severity::High, "a.py:1"),
+            finding("CRITICAL_ISSUE", Severity::Critical, "b.py:2"),
+        ])]);
         let cmp = compare_reports(&baseline, &head);
-        let new_findings: Vec<&Regression> = cmp
-            .regressions
-            .iter()
+        let new_findings: Vec<&Regression> = cmp.regressions.iter()
             .filter(|r| matches!(r, Regression::NewFinding { .. }))
             .collect();
         assert_eq!(new_findings.len(), 2);
         // Critical must come before High
-        let first_sev = if let Regression::NewFinding { severity, .. } = new_findings[0] {
-            *severity
-        } else {
-            Severity::Info
-        };
+        let first_sev = if let Regression::NewFinding { severity, .. } = new_findings[0] { *severity } else { Severity::Info };
         assert!(matches!(first_sev, Severity::Critical));
     }
 
@@ -969,25 +669,14 @@ mod tests {
     fn comparison_from_saved_reports() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
-        let baseline = make_report(vec![layer(
-            "hostile",
-            "bandit",
-            LayerStatus::Fail,
-            vec![finding(
-                "SQL_INJECTION",
-                Severity::Critical,
-                "src/app.py:10",
-            )],
-        )]);
+        let baseline = make_report(vec![layer("hostile", "bandit", LayerStatus::Fail, vec![
+            finding("SQL_INJECTION", Severity::Critical, "src/app.py:10"),
+        ])]);
         baseline.save(dir.path()).unwrap();
         let head = make_report(vec![layer("hostile", "bandit", LayerStatus::Pass, vec![])]);
         head.save(dir.path()).unwrap();
-        let lb = BarzelReport::load_by_id(dir.path(), &baseline.id)
-            .unwrap()
-            .unwrap();
-        let lh = BarzelReport::load_by_id(dir.path(), &head.id)
-            .unwrap()
-            .unwrap();
+        let lb = BarzelReport::load_by_id(dir.path(), &baseline.id).unwrap().unwrap();
+        let lh = BarzelReport::load_by_id(dir.path(), &head.id).unwrap().unwrap();
         let cmp = compare_reports(&lb, &lh);
         assert_eq!(cmp.verdict, Verdict::Improved);
     }

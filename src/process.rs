@@ -22,13 +22,7 @@ pub trait SubprocessRunner: Send + Sync {
     /// Run a command with a wall-clock timeout (milliseconds).
     /// Returns `Err` with `ErrorKind::TimedOut` if the process does not finish in time.
     /// Default implementation ignores the timeout and delegates to `run()`.
-    fn run_timed(
-        &self,
-        cmd: &str,
-        args: &[&str],
-        cwd: &Path,
-        timeout_ms: u64,
-    ) -> io::Result<ProcessOutput> {
+    fn run_timed(&self, cmd: &str, args: &[&str], cwd: &Path, timeout_ms: u64) -> io::Result<ProcessOutput> {
         let _ = timeout_ms;
         self.run(cmd, args, cwd)
     }
@@ -63,13 +57,7 @@ impl SubprocessRunner for OsProcessRunner {
         Self::spawn_and_collect(cmd, args, cwd)
     }
 
-    fn run_timed(
-        &self,
-        cmd: &str,
-        args: &[&str],
-        cwd: &Path,
-        timeout_ms: u64,
-    ) -> io::Result<ProcessOutput> {
+    fn run_timed(&self, cmd: &str, args: &[&str], cwd: &Path, timeout_ms: u64) -> io::Result<ProcessOutput> {
         use std::io::Read;
         use std::process::Stdio;
         use wait_timeout::ChildExt;
@@ -87,16 +75,8 @@ impl SubprocessRunner for OsProcessRunner {
         let mut stderr_pipe = child.stderr.take().expect("stderr piped");
         let (tx_out, rx_out) = std::sync::mpsc::channel::<Vec<u8>>();
         let (tx_err, rx_err) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut b = Vec::new();
-            stdout_pipe.read_to_end(&mut b).ok();
-            let _ = tx_out.send(b);
-        });
-        std::thread::spawn(move || {
-            let mut b = Vec::new();
-            stderr_pipe.read_to_end(&mut b).ok();
-            let _ = tx_err.send(b);
-        });
+        std::thread::spawn(move || { let mut b = Vec::new(); stdout_pipe.read_to_end(&mut b).ok(); let _ = tx_out.send(b); });
+        std::thread::spawn(move || { let mut b = Vec::new(); stderr_pipe.read_to_end(&mut b).ok(); let _ = tx_err.send(b); });
 
         let timeout = std::time::Duration::from_millis(timeout_ms);
         match child.wait_timeout(timeout)? {
@@ -136,51 +116,29 @@ pub struct MockProcessRunner {
 impl MockProcessRunner {
     /// Every call returns Ok with success=true and the given stdout.
     pub fn passing(stdout: impl Into<String>) -> Self {
-        Self {
-            success: true,
-            stdout: stdout.into(),
-            stderr: String::new(),
-            spawn_error: None,
-        }
+        Self { success: true, stdout: stdout.into(), stderr: String::new(), spawn_error: None }
     }
 
     /// Every call returns Ok with success=false and the given stdout.
     /// Simulates a process that spawned successfully but exited non-zero.
     pub fn failing(stdout: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            stdout: stdout.into(),
-            stderr: "error output".into(),
-            spawn_error: None,
-        }
+        Self { success: false, stdout: stdout.into(), stderr: "error output".into(), spawn_error: None }
     }
 
     /// Every call returns Ok with success=false and empty output.
     /// Use `spawn_error()` if you need to simulate a missing binary.
     pub fn unavailable() -> Self {
-        Self {
-            success: false,
-            stdout: String::new(),
-            stderr: "not found".into(),
-            spawn_error: None,
-        }
+        Self { success: false, stdout: String::new(), stderr: "not found".into(), spawn_error: None }
     }
 
     /// Every call returns Err(io::Error::NotFound) — simulates binary not on PATH.
     pub fn spawn_error(msg: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            stdout: String::new(),
-            stderr: String::new(),
-            spawn_error: Some(msg.into()),
-        }
+        Self { success: false, stdout: String::new(), stderr: String::new(), spawn_error: Some(msg.into()) }
     }
 
     /// Returns a sequence of responses, one per call (in order).
     pub fn sequence(responses: Vec<ProcessOutput>) -> SequentialMock {
-        SequentialMock {
-            responses: std::sync::Mutex::new(std::collections::VecDeque::from(responses)),
-        }
+        SequentialMock { responses: std::sync::Mutex::new(std::collections::VecDeque::from(responses)) }
     }
 }
 
@@ -207,17 +165,9 @@ pub struct SequentialMock {
 #[cfg(test)]
 impl SubprocessRunner for SequentialMock {
     fn run(&self, _cmd: &str, _args: &[&str], _cwd: &Path) -> io::Result<ProcessOutput> {
-        self.responses
-            .lock()
-            .unwrap()
-            .pop_front()
+        self.responses.lock().unwrap().pop_front()
             .map(Ok)
-            .unwrap_or_else(|| {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "MockProcessRunner: no more responses",
-                ))
-            })
+            .unwrap_or_else(|| Err(io::Error::new(io::ErrorKind::Other, "MockProcessRunner: no more responses")))
     }
 }
 

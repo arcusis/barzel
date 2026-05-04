@@ -16,28 +16,20 @@ pub struct TscRunner {
 
 impl Default for TscRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl TestRunner for TscRunner {
-    fn name(&self) -> &'static str {
-        "tsc"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Logic
-    }
+    fn name(&self) -> &'static str { "tsc" }
+    fn layer(&self) -> Layer { Layer::Logic }
 
     fn skip_message(&self) -> &'static str {
         "tsc not found — install TypeScript: `npm install -D typescript` and add a tsconfig.json"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::TypeScript {
-            return false;
-        }
+        if project.language != crate::detect::Language::TypeScript { return false; }
         let root = Path::new(&project.root);
         // tsc must be in node_modules and tsconfig must exist
         root.join("node_modules").join(".bin").join("tsc").exists()
@@ -158,10 +150,7 @@ mod tests {
             root: root.to_string(),
             has_tests: true,
             package_name: Some("my-app".to_string()),
-            frameworks: ProjectFrameworks {
-                is_nextjs: true,
-                ..Default::default()
-            },
+            frameworks: ProjectFrameworks { is_nextjs: true, ..Default::default() },
             workspace_root: None,
         }
     }
@@ -169,35 +158,20 @@ mod tests {
     fn setup_tsc_dir() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
-        std::fs::write(
-            dir.path().join("node_modules/.bin/tsc"),
-            b"#!/bin/sh\necho hi",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("node_modules/.bin/tsc"), b"#!/bin/sh\necho hi").unwrap();
         std::fs::write(dir.path().join("tsconfig.json"), b"{}").unwrap();
         dir
     }
 
     #[test]
-    fn name_is_tsc() {
-        assert_eq!(TscRunner::default().name(), "tsc");
-    }
+    fn name_is_tsc() { assert_eq!(TscRunner::default().name(), "tsc"); }
 
     #[test]
-    fn layer_is_logic() {
-        assert!(matches!(TscRunner::default().layer(), Layer::Logic));
-    }
+    fn layer_is_logic() { assert!(matches!(TscRunner::default().layer(), Layer::Logic)); }
 
     #[test]
     fn not_available_for_rust() {
-        let i = ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!TscRunner::default().is_available(&i));
     }
 
@@ -227,9 +201,7 @@ mod tests {
     #[test]
     fn run_pass_returns_pass() {
         let dir = setup_tsc_dir();
-        let r = TscRunner {
-            proc: Arc::new(MockProcessRunner::passing("")),
-        };
+        let r = TscRunner { proc: Arc::new(MockProcessRunner::passing("")) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.is_empty());
@@ -239,49 +211,32 @@ mod tests {
     fn run_fail_parses_type_errors() {
         let dir = setup_tsc_dir();
         let output = "src/app.ts(12,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.";
-        let r = TscRunner {
-            proc: Arc::new(MockProcessRunner::failing(output)),
-        };
+        let r = TscRunner { proc: Arc::new(MockProcessRunner::failing(output)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert!(!result.findings.is_empty());
         assert_eq!(result.findings[0].severity, Severity::High);
-        assert!(result.findings[0]
-            .location
-            .as_ref()
-            .unwrap()
-            .contains("src/app.ts(12,5)"));
+        assert!(result.findings[0].location.as_ref().unwrap().contains("src/app.ts(12,5)"));
         assert!(result.findings[0].message.contains("TS2345"));
     }
 
     #[test]
     fn run_truncates_to_10_errors() {
         let dir = setup_tsc_dir();
-        let lines: String = (1..=15)
-            .map(|i| format!("src/f.ts({i},1): error TS2322: Type error {i}.\n"))
-            .collect();
-        let r = TscRunner {
-            proc: Arc::new(MockProcessRunner::failing(&lines)),
-        };
+        let lines: String = (1..=15).map(|i| {
+            format!("src/f.ts({i},1): error TS2322: Type error {i}.\n")
+        }).collect();
+        let r = TscRunner { proc: Arc::new(MockProcessRunner::failing(&lines)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
-        let type_errors: Vec<_> = result
-            .findings
-            .iter()
-            .filter(|f| f.code == "TYPE_ERROR")
-            .collect();
+        let type_errors: Vec<_> = result.findings.iter().filter(|f| f.code == "TYPE_ERROR").collect();
         assert_eq!(type_errors.len(), 10);
-        let truncated = result
-            .findings
-            .iter()
-            .any(|f| f.code == "TYPE_ERRORS_TRUNCATED");
+        let truncated = result.findings.iter().any(|f| f.code == "TYPE_ERRORS_TRUNCATED");
         assert!(truncated);
     }
 
     #[test]
     fn parse_tsc_error_line() {
-        let errors = parse_tsc_errors(
-            "src/app.ts(12,5): error TS2345: Argument of type 'string' is not assignable.",
-        );
+        let errors = parse_tsc_errors("src/app.ts(12,5): error TS2345: Argument of type 'string' is not assignable.");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, "src/app.ts(12,5)");
         assert!(errors[0].1.contains("TS2345"));

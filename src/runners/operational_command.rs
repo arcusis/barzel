@@ -15,10 +15,7 @@ pub struct OperationalCommandRunner {
 
 impl OperationalCommandRunner {
     pub fn new(commands: Vec<OperationalCommandConfig>) -> Self {
-        Self {
-            commands,
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { commands, proc: Arc::new(OsProcessRunner) }
     }
 }
 
@@ -68,22 +65,14 @@ fn resolve_cwd(project_root: &Path, cwd: Option<&str>) -> std::path::PathBuf {
         None => project_root.to_path_buf(),
         Some(c) => {
             let p = Path::new(c);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                project_root.join(p)
-            }
+            if p.is_absolute() { p.to_path_buf() } else { project_root.join(p) }
         }
     }
 }
 
 impl TestRunner for OperationalCommandRunner {
-    fn name(&self) -> &'static str {
-        "operational-cmd"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Operational
-    }
+    fn name(&self) -> &'static str { "operational-cmd" }
+    fn layer(&self) -> Layer { Layer::Operational }
 
     fn skip_message(&self) -> &'static str {
         "no commands configured — add [[layers.operational.commands]] to .barzel.toml"
@@ -105,10 +94,7 @@ impl TestRunner for OperationalCommandRunner {
             let args_ref: Vec<&str> = cmd_cfg.args.iter().map(String::as_str).collect();
             let reproduce = build_reproduce_cmd(cmd_cfg);
 
-            match self
-                .proc
-                .run_timed(&cmd_cfg.cmd, &args_ref, &cwd, cmd_cfg.timeout_ms)
-            {
+            match self.proc.run_timed(&cmd_cfg.cmd, &args_ref, &cwd, cmd_cfg.timeout_ms) {
                 Ok(out) if out.success => {
                     passed += 1;
                 }
@@ -123,7 +109,10 @@ impl TestRunner for OperationalCommandRunner {
                     findings.push(Finding {
                         severity: Severity::High,
                         code: "OPERATIONAL_COMMAND_FAILED".to_string(),
-                        message: format!("Command '{}' exited non-zero: {}", cmd_cfg.name, snippet),
+                        message: format!(
+                            "Command '{}' exited non-zero: {}",
+                            cmd_cfg.name, snippet
+                        ),
                         location: Some(format!("{} {}", cmd_cfg.cmd, cmd_cfg.args.join(" "))),
                         reproduce_cmd: Some(reproduce.clone()),
                         suggestion: Some(format!(
@@ -159,10 +148,7 @@ impl TestRunner for OperationalCommandRunner {
                     findings.push(Finding {
                         severity: sev,
                         code: code.to_string(),
-                        message: format!(
-                            "Command '{}' ('{}') failed: {}",
-                            cmd_cfg.name, cmd_cfg.cmd, err
-                        ),
+                        message: format!("Command '{}' ('{}') failed: {}", cmd_cfg.name, cmd_cfg.cmd, err),
                         location: Some(cmd_cfg.cmd.clone()),
                         reproduce_cmd: Some(reproduce),
                         suggestion: Some(suggestion),
@@ -171,11 +157,7 @@ impl TestRunner for OperationalCommandRunner {
             }
         }
 
-        let status = if !findings.is_empty() {
-            LayerStatus::Fail
-        } else {
-            LayerStatus::Pass
-        };
+        let status = if !findings.is_empty() { LayerStatus::Fail } else { LayerStatus::Pass };
 
         Ok(LayerResult {
             name: "operational".to_string(),
@@ -213,9 +195,7 @@ mod tests {
         }
     }
 
-    fn project() -> ProjectInfo {
-        project_at("/tmp")
-    }
+    fn project() -> ProjectInfo { project_at("/tmp") }
 
     fn make_cmd(name: &str, cmd: &str, args: &[&str]) -> OperationalCommandConfig {
         OperationalCommandConfig {
@@ -227,32 +207,20 @@ mod tests {
         }
     }
 
-    fn runner_with(
-        commands: Vec<OperationalCommandConfig>,
-        proc: impl SubprocessRunner + 'static,
-    ) -> OperationalCommandRunner {
-        OperationalCommandRunner {
-            commands,
-            proc: Arc::new(proc),
-        }
+    fn runner_with(commands: Vec<OperationalCommandConfig>, proc: impl SubprocessRunner + 'static) -> OperationalCommandRunner {
+        OperationalCommandRunner { commands, proc: Arc::new(proc) }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
 
     #[test]
     fn name_is_operational_cmd() {
-        assert_eq!(
-            OperationalCommandRunner::new(vec![]).name(),
-            "operational-cmd"
-        );
+        assert_eq!(OperationalCommandRunner::new(vec![]).name(), "operational-cmd");
     }
 
     #[test]
     fn layer_is_operational() {
-        assert!(matches!(
-            OperationalCommandRunner::new(vec![]).layer(),
-            Layer::Operational
-        ));
+        assert!(matches!(OperationalCommandRunner::new(vec![]).layer(), Layer::Operational));
     }
 
     #[test]
@@ -299,11 +267,7 @@ mod tests {
     #[test]
     fn nonzero_exit_is_high_severity() {
         let r = runner_with(
-            vec![make_cmd(
-                "migrate",
-                "python",
-                &["manage.py", "migrate", "--check"],
-            )],
+            vec![make_cmd("migrate", "python", &["manage.py", "migrate", "--check"])],
             MockProcessRunner::failing("unapplied migrations"),
         );
         let result = r.run(&project()).unwrap();
@@ -331,14 +295,8 @@ mod tests {
         );
         let result = r.run(&project()).unwrap();
         let repr = result.findings[0].reproduce_cmd.as_deref().unwrap();
-        assert!(
-            repr.contains("python"),
-            "reproduce_cmd must contain executable"
-        );
-        assert!(
-            repr.contains("manage.py"),
-            "reproduce_cmd must contain args"
-        );
+        assert!(repr.contains("python"), "reproduce_cmd must contain executable");
+        assert!(repr.contains("manage.py"), "reproduce_cmd must contain args");
     }
 
     #[test]
@@ -381,10 +339,7 @@ mod tests {
 
     #[test]
     fn spawn_error_layer_is_fail() {
-        let r = runner_with(
-            vec![make_cmd("check", "missing", &[])],
-            MockProcessRunner::spawn_error("not found"),
-        );
+        let r = runner_with(vec![make_cmd("check", "missing", &[])], MockProcessRunner::spawn_error("not found"));
         let result = r.run(&project()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
     }
@@ -397,18 +352,9 @@ mod tests {
         struct TimedOutProc;
         impl SubprocessRunner for TimedOutProc {
             fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "timed out after 5000ms",
-                ))
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out after 5000ms"))
             }
-            fn run_timed(
-                &self,
-                cmd: &str,
-                args: &[&str],
-                cwd: &Path,
-                _timeout_ms: u64,
-            ) -> std::io::Result<ProcessOutput> {
+            fn run_timed(&self, cmd: &str, args: &[&str], cwd: &Path, _timeout_ms: u64) -> std::io::Result<ProcessOutput> {
                 self.run(cmd, args, cwd)
             }
         }
@@ -416,11 +362,7 @@ mod tests {
         let result = r.run(&project()).unwrap();
         assert_eq!(result.findings[0].code, "OPERATIONAL_COMMAND_TIMEOUT");
         assert_eq!(result.findings[0].severity, Severity::High);
-        assert!(result.findings[0]
-            .suggestion
-            .as_deref()
-            .unwrap()
-            .contains("timeout_ms"));
+        assert!(result.findings[0].suggestion.as_deref().unwrap().contains("timeout_ms"));
     }
 
     #[test]
@@ -429,19 +371,9 @@ mod tests {
         struct TimeoutRecorder(Mutex<Vec<u64>>);
         impl SubprocessRunner for TimeoutRecorder {
             fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<ProcessOutput> {
-                Ok(ProcessOutput {
-                    success: true,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                })
+                Ok(ProcessOutput { success: true, stdout: String::new(), stderr: String::new() })
             }
-            fn run_timed(
-                &self,
-                cmd: &str,
-                args: &[&str],
-                cwd: &Path,
-                timeout_ms: u64,
-            ) -> std::io::Result<ProcessOutput> {
+            fn run_timed(&self, cmd: &str, args: &[&str], cwd: &Path, timeout_ms: u64) -> std::io::Result<ProcessOutput> {
                 self.0.lock().unwrap().push(timeout_ms);
                 self.run(cmd, args, cwd)
             }
@@ -449,16 +381,10 @@ mod tests {
         let recorded = Arc::new(TimeoutRecorder(Mutex::new(vec![])));
         let mut cfg = make_cmd("check", "python", &["--version"]);
         cfg.timeout_ms = 12_345;
-        let r = OperationalCommandRunner {
-            commands: vec![cfg],
-            proc: recorded.clone(),
-        };
+        let r = OperationalCommandRunner { commands: vec![cfg], proc: recorded.clone() };
         r.run(&project()).unwrap();
-        assert_eq!(
-            recorded.0.lock().unwrap()[0],
-            12_345,
-            "timeout_ms from config must be passed to run_timed"
-        );
+        assert_eq!(recorded.0.lock().unwrap()[0], 12_345,
+            "timeout_ms from config must be passed to run_timed");
     }
 
     // ── mixed results ─────────────────────────────────────────────────────────
@@ -468,16 +394,8 @@ mod tests {
         let r = runner_with(
             vec![make_cmd("a", "ok", &[]), make_cmd("b", "fail", &[])],
             MockProcessRunner::sequence(vec![
-                ProcessOutput {
-                    success: true,
-                    stdout: "ok".into(),
-                    stderr: String::new(),
-                },
-                ProcessOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: "err".into(),
-                },
+                ProcessOutput { success: true, stdout: "ok".into(), stderr: String::new() },
+                ProcessOutput { success: false, stdout: String::new(), stderr: "err".into() },
             ]),
         );
         let result = r.run(&project()).unwrap();
@@ -492,10 +410,7 @@ mod tests {
     fn reproduce_cmd_quotes_executable_and_args() {
         let cfg = make_cmd("test", "python", &["manage.py", "test"]);
         let repr = build_reproduce_cmd(&cfg);
-        assert!(
-            repr.starts_with("'python'"),
-            "executable must be single-quoted"
-        );
+        assert!(repr.starts_with("'python'"), "executable must be single-quoted");
         assert!(repr.contains("'manage.py'"), "args must be single-quoted");
     }
 
@@ -504,10 +419,7 @@ mod tests {
         let mut cfg = make_cmd("test", "pytest", &[]);
         cfg.cwd = Some("backend".to_string());
         let repr = build_reproduce_cmd(&cfg);
-        assert!(
-            repr.starts_with("cd 'backend' && "),
-            "cwd must be shell-quoted cd prefix"
-        );
+        assert!(repr.starts_with("cd 'backend' && "), "cwd must be shell-quoted cd prefix");
     }
 
     #[test]
@@ -555,29 +467,19 @@ mod tests {
         impl SubprocessRunner for CwdRecorder {
             fn run(&self, _: &str, _: &[&str], cwd: &Path) -> std::io::Result<ProcessOutput> {
                 self.0.lock().unwrap().push(cwd.to_path_buf());
-                Ok(ProcessOutput {
-                    success: true,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                })
+                Ok(ProcessOutput { success: true, stdout: String::new(), stderr: String::new() })
             }
         }
         let recorder = Arc::new(CwdRecorder(Mutex::new(vec![])));
         let dir = tempdir().unwrap();
         let mut cfg = make_cmd("test", "pytest", &[]);
         cfg.cwd = Some("backend".to_string());
-        let r = OperationalCommandRunner {
-            commands: vec![cfg],
-            proc: recorder.clone(),
-        };
+        let r = OperationalCommandRunner { commands: vec![cfg], proc: recorder.clone() };
         let p = project_at(dir.path().to_str().unwrap());
         r.run(&p).unwrap();
         let recorded = recorder.0.lock().unwrap();
-        assert_eq!(
-            recorded[0],
-            dir.path().join("backend"),
-            "relative cwd must be joined with project root and passed to subprocess"
-        );
+        assert_eq!(recorded[0], dir.path().join("backend"),
+            "relative cwd must be joined with project root and passed to subprocess");
     }
 
     // ── output truncation ─────────────────────────────────────────────────────
@@ -587,22 +489,14 @@ mod tests {
         let long_output = "x".repeat(500);
         let r = runner_with(
             vec![make_cmd("check", "sh", &[])],
-            MockProcessRunner::sequence(vec![ProcessOutput {
-                success: false,
-                stdout: long_output,
-                stderr: String::new(),
-            }]),
+            MockProcessRunner::sequence(vec![
+                ProcessOutput { success: false, stdout: long_output, stderr: String::new() }
+            ]),
         );
         let result = r.run(&project()).unwrap();
         let msg = &result.findings[0].message;
-        assert!(
-            msg.contains("truncated"),
-            "long output must be truncated in finding"
-        );
-        assert!(
-            msg.len() < 500,
-            "truncated message must be shorter than raw output"
-        );
+        assert!(msg.contains("truncated"), "long output must be truncated in finding");
+        assert!(msg.len() < 500, "truncated message must be shorter than raw output");
     }
 
     #[test]
@@ -610,18 +504,12 @@ mod tests {
         // 🔥 is 4 bytes; 100 copies = 400 bytes but only 100 Unicode scalars.
         // With a byte-based slice this would panic; char-based must not.
         let emoji_output = "🔥".repeat(100);
-        assert!(
-            emoji_output.len() > 300,
-            "emoji output must exceed byte limit"
-        );
+        assert!(emoji_output.len() > 300, "emoji output must exceed byte limit");
         assert!(emoji_output.chars().count() == 100);
         let truncated = truncate_output(&emoji_output, 50);
         assert!(truncated.contains("truncated"), "must be truncated");
         // 50 chars taken + "… (truncated)" suffix (13 chars) = 63 max
-        assert!(
-            truncated.chars().count() <= 70,
-            "truncated output must be bounded in chars"
-        );
+        assert!(truncated.chars().count() <= 70, "truncated output must be bounded in chars");
         // Valid UTF-8 — no panic, no garbled surrogate halves
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }

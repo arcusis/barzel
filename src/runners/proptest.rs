@@ -13,19 +13,13 @@ pub struct ProptestRunner {
 
 impl Default for ProptestRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl TestRunner for ProptestRunner {
-    fn name(&self) -> &'static str {
-        "proptest"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Logic
-    }
+    fn name(&self) -> &'static str { "proptest" }
+    fn layer(&self) -> Layer { Layer::Logic }
 
     fn skip_message(&self) -> &'static str {
         "No property-based tests found — add `proptest` to dev-dependencies for invariant testing"
@@ -49,11 +43,7 @@ impl TestRunner for ProptestRunner {
             Ok(out) => {
                 let combined = out.combined();
                 let (tests_run, tests_passed, tests_failed) = parse_test_counts(&combined);
-                let status = if out.success {
-                    LayerStatus::Pass
-                } else {
-                    LayerStatus::Fail
-                };
+                let status = if out.success { LayerStatus::Pass } else { LayerStatus::Fail };
 
                 Ok(LayerResult {
                     name: "logic".to_string(),
@@ -66,9 +56,7 @@ impl TestRunner for ProptestRunner {
                             severity: Severity::High,
                             code: "PBT_FAILURE".to_string(),
                             message: "Property-based tests failed".to_string(),
-                            reproduce_cmd: Some(
-                                "cargo test -- --nocapture 2>&1 | head -80".to_string(),
-                            ),
+                            reproduce_cmd: Some("cargo test -- --nocapture 2>&1 | head -80".to_string()),
                             suggestion: Some(
                                 "Check the counterexample printed by proptest. \
                                  The failure shrinks to the minimal failing case automatically."
@@ -95,15 +83,10 @@ impl TestRunner for ProptestRunner {
                     code: "PBT_EXECUTION_ERROR".to_string(),
                     message: format!("Failed to run cargo test: {}", e),
                     reproduce_cmd: Some("cargo test 2>&1".to_string()),
-                    suggestion: Some(
-                        "Ensure `cargo` is in PATH and the project compiles.".to_string(),
-                    ),
+                    suggestion: Some("Ensure `cargo` is in PATH and the project compiles.".to_string()),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics {
-                    failed: 1,
-                    ..Default::default()
-                },
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -139,39 +122,24 @@ mod tests {
     use proptest::prelude::*;
 
     fn info(language: Language) -> ProjectInfo {
-        ProjectInfo {
-            language,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> ProptestRunner {
-        ProptestRunner {
-            proc: Arc::new(mock),
-        }
+        ProptestRunner { proc: Arc::new(mock) }
     }
 
     // ── metadata ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn name_is_proptest() {
-        assert_eq!(ProptestRunner::default().name(), "proptest");
-    }
+    fn name_is_proptest() { assert_eq!(ProptestRunner::default().name(), "proptest"); }
 
     #[test]
-    fn layer_is_logic() {
-        assert!(matches!(ProptestRunner::default().layer(), Layer::Logic));
-    }
+    fn layer_is_logic() { assert!(matches!(ProptestRunner::default().layer(), Layer::Logic)); }
 
     #[test]
     fn skip_message_mentions_proptest() {
-        assert!(ProptestRunner::default()
-            .skip_message()
-            .contains("proptest"));
+        assert!(ProptestRunner::default().skip_message().contains("proptest"));
     }
 
     // ── is_available ──────────────────────────────────────────────────────────
@@ -185,33 +153,15 @@ mod tests {
     fn not_available_when_proptest_missing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
-        let i = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!ProptestRunner::default().is_available(&i));
     }
 
     #[test]
     fn available_when_proptest_in_toml() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            b"[dev-dependencies]\nproptest=\"1.0\"",
-        )
-        .unwrap();
-        let i = ProjectInfo {
-            language: Language::Rust,
-            root: dir.path().to_string_lossy().to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        std::fs::write(dir.path().join("Cargo.toml"), b"[dev-dependencies]\nproptest=\"1.0\"").unwrap();
+        let i = ProjectInfo { language: Language::Rust, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(ProptestRunner::default().is_available(&i));
     }
 
@@ -220,9 +170,7 @@ mod tests {
     #[test]
     fn run_returns_pass_on_success() {
         let stdout = "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured";
-        let result = runner_with(MockProcessRunner::passing(stdout))
-            .run(&info(Language::Rust))
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Rust)).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.tests_run, 5);
         assert_eq!(result.metrics.passed, 5);
@@ -233,9 +181,7 @@ mod tests {
     #[test]
     fn run_returns_fail_on_test_failure() {
         let stdout = "test result: FAILED. 3 passed; 2 failed; 0 ignored";
-        let result = runner_with(MockProcessRunner::failing(stdout))
-            .run(&info(Language::Rust))
-            .unwrap();
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&info(Language::Rust)).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.metrics.failed, 2);
         assert_eq!(result.findings[0].severity, Severity::High);
@@ -246,21 +192,11 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "cargo not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cargo not found"))
             }
         }
-        let runner = ProptestRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let runner = ProptestRunner { proc: Arc::new(BrokenProc) };
         let result = runner.run(&info(Language::Rust)).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -272,17 +208,13 @@ mod tests {
     #[test]
     fn parses_standard_line() {
         let (t, p, f) = parse_test_counts("test result: ok. 5 passed; 2 failed; 0 ignored");
-        assert_eq!(p, 5);
-        assert_eq!(f, 2);
-        assert_eq!(t, 7);
+        assert_eq!(p, 5); assert_eq!(f, 2); assert_eq!(t, 7);
     }
 
     #[test]
     fn fallback_returns_one_passed() {
         let (t, p, f) = parse_test_counts("no match");
-        assert_eq!(t, 1);
-        assert_eq!(p, 1);
-        assert_eq!(f, 0);
+        assert_eq!(t, 1); assert_eq!(p, 1); assert_eq!(f, 0);
     }
 
     proptest! {

@@ -13,35 +13,25 @@ pub struct PytestRunner {
 
 impl Default for PytestRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl TestRunner for PytestRunner {
-    fn name(&self) -> &'static str {
-        "pytest"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Logic
-    }
+    fn name(&self) -> &'static str { "pytest" }
+    fn layer(&self) -> Layer { Layer::Logic }
 
     fn skip_message(&self) -> &'static str {
         "pytest not found — add `pytest` and optionally `hypothesis` to dev-dependencies for property-based testing"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Python {
-            return false;
-        }
+        if project.language != crate::detect::Language::Python { return false; }
         // Check if pytest is installed in the project's environment
         let root = Path::new(&project.root);
         // Try project-local pytest first, then system
         let local = root.join(".venv").join("bin").join("pytest");
-        if local.exists() {
-            return true;
-        }
+        if local.exists() { return true; }
         self.proc.is_available("pytest", &["--version"])
     }
 
@@ -60,13 +50,7 @@ impl TestRunner for PytestRunner {
         // Add --cov if pytest-cov is available in the environment
         let has_cov = has_pytest_cov(root);
         let args: Vec<&str> = if has_cov {
-            vec![
-                "--tb=short",
-                "-q",
-                "--color=no",
-                "--cov=.",
-                "--cov-report=term-missing:skip-covered",
-            ]
+            vec!["--tb=short", "-q", "--color=no", "--cov=.", "--cov-report=term-missing:skip-covered"]
         } else {
             vec!["--tb=short", "-q", "--color=no"]
         };
@@ -169,9 +153,7 @@ impl TestRunner for PytestRunner {
 fn has_pytest_cov(root: &Path) -> bool {
     for file in &["requirements.txt", "requirements-dev.txt", "pyproject.toml"] {
         if let Ok(content) = std::fs::read_to_string(root.join(file)) {
-            if content.contains("pytest-cov") {
-                return true;
-            }
+            if content.contains("pytest-cov") { return true; }
         }
     }
     // Also check if pytest-cov is installed in venv
@@ -181,12 +163,7 @@ fn has_pytest_cov(root: &Path) -> bool {
             .ok()
             .and_then(|mut d| d.next())
             .and_then(|e| e.ok())
-            .map(|site| {
-                site.path()
-                    .join("site-packages")
-                    .join("pytest_cov")
-                    .exists()
-            })
+            .map(|site| site.path().join("site-packages").join("pytest_cov").exists())
             .unwrap_or(false)
 }
 
@@ -208,35 +185,25 @@ fn has_hypothesis(root: &Path) -> bool {
     // Check requirements files
     for file in &["requirements.txt", "requirements-dev.txt", "pyproject.toml"] {
         if let Ok(content) = std::fs::read_to_string(root.join(file)) {
-            if content.contains("hypothesis") {
-                return true;
-            }
+            if content.contains("hypothesis") { return true; }
         }
     }
     // Check if hypothesis is imported in any test file
-    if walk_contains(root, "from hypothesis", ".py")
-        || walk_contains(root, "import hypothesis", ".py")
-    {
+    if walk_contains(root, "from hypothesis", ".py") || walk_contains(root, "import hypothesis", ".py") {
         return true;
     }
     false
 }
 
 fn walk_contains(dir: &Path, pattern: &str, ext: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
+    let Ok(entries) = std::fs::read_dir(dir) else { return false; };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if walk_contains(&path, pattern, ext) {
-                return true;
-            }
+            if walk_contains(&path, pattern, ext) { return true; }
         } else if path.to_string_lossy().ends_with(ext) {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if content.contains(pattern) {
-                    return true;
-                }
+                if content.contains(pattern) { return true; }
             }
         }
     }
@@ -276,9 +243,7 @@ fn extract_pytest_failures(output: &str) -> Vec<String> {
         let t = line.trim();
         if t.starts_with("FAILED ") {
             let name = t.trim_start_matches("FAILED ").trim();
-            if !name.is_empty() {
-                failures.push(name.to_string());
-            }
+            if !name.is_empty() { failures.push(name.to_string()); }
         }
     }
     failures.truncate(3);
@@ -293,54 +258,30 @@ mod tests {
     use proptest::prelude::*;
 
     fn py_info() -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Python,
-            root: "/tmp".to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Python, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     fn runner_with(mock: MockProcessRunner) -> PytestRunner {
-        PytestRunner {
-            proc: Arc::new(mock),
-        }
+        PytestRunner { proc: Arc::new(mock) }
     }
 
     #[test]
-    fn name_is_pytest() {
-        assert_eq!(PytestRunner::default().name(), "pytest");
-    }
+    fn name_is_pytest() { assert_eq!(PytestRunner::default().name(), "pytest"); }
 
     #[test]
-    fn layer_is_logic() {
-        assert!(matches!(PytestRunner::default().layer(), Layer::Logic));
-    }
+    fn layer_is_logic() { assert!(matches!(PytestRunner::default().layer(), Layer::Logic)); }
 
     #[test]
     fn not_available_for_rust() {
-        let r = PytestRunner {
-            proc: Arc::new(MockProcessRunner::passing("")),
-        };
-        let i = ProjectInfo {
-            language: Language::Rust,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let r = PytestRunner { proc: Arc::new(MockProcessRunner::passing("")) };
+        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 
     #[test]
     fn run_pass_parses_counts() {
         let stdout = "5 passed in 0.45s";
-        let result = runner_with(MockProcessRunner::passing(stdout))
-            .run(&py_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout)).run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.passed, 5);
         assert_eq!(result.metrics.failed, 0);
@@ -349,9 +290,7 @@ mod tests {
     #[test]
     fn run_fail_parses_counts() {
         let stdout = "3 passed, 2 failed in 0.45s\nFAILED test_foo.py::test_bar";
-        let result = runner_with(MockProcessRunner::failing(stdout))
-            .run(&py_info())
-            .unwrap();
+        let result = runner_with(MockProcessRunner::failing(stdout)).run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::High);
         assert!(result.findings[0].message.contains("2"));
@@ -361,21 +300,11 @@ mod tests {
     fn run_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(
-                &self,
-                _: &str,
-                _: &[&str],
-                _: &Path,
-            ) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "pytest not found",
-                ))
+            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "pytest not found"))
             }
         }
-        let r = PytestRunner {
-            proc: Arc::new(BrokenProc),
-        };
+        let r = PytestRunner { proc: Arc::new(BrokenProc) };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
@@ -384,23 +313,18 @@ mod tests {
     #[test]
     fn parses_passed_only() {
         let (passed, failed, errors) = parse_pytest_output("5 passed in 0.12s");
-        assert_eq!(passed, 5);
-        assert_eq!(failed, 0);
-        assert_eq!(errors, 0);
+        assert_eq!(passed, 5); assert_eq!(failed, 0); assert_eq!(errors, 0);
     }
 
     #[test]
     fn parses_mixed_results() {
         let (passed, failed, errors) = parse_pytest_output("3 passed, 2 failed, 1 error in 0.45s");
-        assert_eq!(passed, 3);
-        assert_eq!(failed, 2);
-        assert_eq!(errors, 1);
+        assert_eq!(passed, 3); assert_eq!(failed, 2); assert_eq!(errors, 1);
     }
 
     #[test]
     fn parse_coverage_pct_extracts_total_line() {
-        let output =
-            "Name    Stmts Miss  Cover\n---\napp.py   100    15    85%\nTOTAL    200    30    85%";
+        let output = "Name    Stmts Miss  Cover\n---\napp.py   100    15    85%\nTOTAL    200    30    85%";
         let pct = parse_coverage_pct(output);
         assert_eq!(pct, Some(85.0));
     }

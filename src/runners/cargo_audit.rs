@@ -14,33 +14,23 @@ pub struct CargoAuditRunner {
 
 impl Default for CargoAuditRunner {
     fn default() -> Self {
-        Self {
-            proc: Arc::new(OsProcessRunner),
-        }
+        Self { proc: Arc::new(OsProcessRunner) }
     }
 }
 
 impl TestRunner for CargoAuditRunner {
-    fn name(&self) -> &'static str {
-        "cargo-audit"
-    }
-    fn layer(&self) -> Layer {
-        Layer::Hostile
-    }
+    fn name(&self) -> &'static str { "cargo-audit" }
+    fn layer(&self) -> Layer { Layer::Hostile }
 
     fn skip_message(&self) -> &'static str {
         "cargo-audit not installed — run `cargo install cargo-audit` to scan Rust dependencies for CVEs"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Rust {
-            return false;
-        }
+        if project.language != crate::detect::Language::Rust { return false; }
         let root = Path::new(&project.root);
         // Needs Cargo.lock to operate
-        if !root.join("Cargo.lock").exists() {
-            return false;
-        }
+        if !root.join("Cargo.lock").exists() { return false; }
         self.proc.is_available("cargo", &["audit", "--version"])
     }
 
@@ -53,15 +43,9 @@ impl TestRunner for CargoAuditRunner {
                 let combined = out.combined();
                 let findings = parse_cargo_audit_json(&combined);
 
-                let status = if findings
-                    .iter()
-                    .any(|f| matches!(f.severity, Severity::Critical | Severity::High))
-                {
+                let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
                     LayerStatus::Fail
-                } else if findings
-                    .iter()
-                    .any(|f| matches!(f.severity, Severity::Medium))
-                {
+                } else if findings.iter().any(|f| matches!(f.severity, Severity::Medium)) {
                     LayerStatus::Partial
                 } else {
                     LayerStatus::Pass
@@ -100,10 +84,7 @@ impl TestRunner for CargoAuditRunner {
                     suggestion: Some("Install: `cargo install cargo-audit`".to_string()),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics {
-                    failed: 1,
-                    ..Default::default()
-                },
+                metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -176,42 +157,19 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info(root: &str) -> ProjectInfo {
-        ProjectInfo {
-            language: Language::Rust,
-            root: root.to_string(),
-            has_tests: true,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        }
+        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
     }
 
     #[test]
-    fn name_is_cargo_audit() {
-        assert_eq!(CargoAuditRunner::default().name(), "cargo-audit");
-    }
+    fn name_is_cargo_audit() { assert_eq!(CargoAuditRunner::default().name(), "cargo-audit"); }
 
     #[test]
-    fn layer_is_hostile() {
-        assert!(matches!(
-            CargoAuditRunner::default().layer(),
-            Layer::Hostile
-        ));
-    }
+    fn layer_is_hostile() { assert!(matches!(CargoAuditRunner::default().layer(), Layer::Hostile)); }
 
     #[test]
     fn not_available_for_typescript() {
-        let r = CargoAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing("")),
-        };
-        let i = ProjectInfo {
-            language: Language::TypeScript,
-            root: "/tmp".to_string(),
-            has_tests: false,
-            package_name: None,
-            frameworks: Default::default(),
-            workspace_root: None,
-        };
+        let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
+        let i = ProjectInfo { language: Language::TypeScript, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
     }
 
@@ -220,9 +178,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"test\"").unwrap();
         // No Cargo.lock
-        let r = CargoAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing("cargo-audit 0.18")),
-        };
+        let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::passing("cargo-audit 0.18")) };
         assert!(!r.is_available(&rust_info(&dir.path().to_string_lossy())));
     }
 
@@ -230,9 +186,7 @@ mod tests {
     fn available_with_cargo_lock() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.lock"), b"").unwrap();
-        let r = CargoAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing("cargo-audit 0.18")),
-        };
+        let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::passing("cargo-audit 0.18")) };
         assert!(r.is_available(&rust_info(&dir.path().to_string_lossy())));
     }
 
@@ -241,15 +195,10 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.lock"), b"").unwrap();
         let json = r#"{"vulnerabilities":{"list":[],"count":0},"warnings":{}}"#;
-        let r = CargoAuditRunner {
-            proc: Arc::new(MockProcessRunner::passing(json)),
-        };
+        let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
         let result = r.run(&rust_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
-        assert!(result
-            .findings
-            .iter()
-            .any(|f| f.code == "CARGO_AUDIT_PASSED"));
+        assert!(result.findings.iter().any(|f| f.code == "CARGO_AUDIT_PASSED"));
     }
 
     #[test]
@@ -257,17 +206,11 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.lock"), b"").unwrap();
         let json = r#"{"vulnerabilities":{"list":[{"advisory":{"id":"RUSTSEC-2023-0001","title":"Unsound use of transmute","severity":"high","patched_versions":[">=1.2.0"]},"package":{"name":"mylib","version":"1.0.0"}}],"count":1}}"#;
-        let r = CargoAuditRunner {
-            proc: Arc::new(MockProcessRunner::failing(json)),
-        };
+        let r = CargoAuditRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
         let result = r.run(&rust_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert!(result.findings[0].message.contains("RUSTSEC-2023-0001"));
-        assert!(result.findings[0]
-            .suggestion
-            .as_ref()
-            .unwrap()
-            .contains("1.2.0"));
+        assert!(result.findings[0].suggestion.as_ref().unwrap().contains("1.2.0"));
     }
 
     #[test]

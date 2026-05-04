@@ -78,17 +78,12 @@ impl DiffContext {
             changed_files.extend(untracked);
         }
 
-        Some(DiffContext {
-            changed_files,
-            repo_root,
-        })
+        Some(DiffContext { changed_files, repo_root })
     }
 
     /// True if any changed file is under `project_root`.
     pub fn affects_path(&self, project_root: &Path) -> bool {
-        let project_root = project_root
-            .canonicalize()
-            .unwrap_or_else(|_| project_root.to_path_buf());
+        let project_root = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
         self.changed_files.iter().any(|rel| {
             let abs = self.repo_root.join(rel);
             let abs = abs.canonicalize().unwrap_or(abs);
@@ -126,14 +121,8 @@ impl DiffContext {
             // Shared Semgrep rule check: .barzel/rules/*.yml or .barzel/rules/*.yaml at
             // the repo root. A change here affects every package that inherits workspace
             // rules, so it is unsafe to skip any member.
-            let is_root_barzel_rule = p
-                .parent()
-                .map(|par| par == Path::new(".barzel/rules"))
-                .unwrap_or(false)
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == "yml" || e == "yaml")
-                    .unwrap_or(false);
+            let is_root_barzel_rule = p.parent().map(|par| par == Path::new(".barzel/rules")).unwrap_or(false)
+                && p.extension().and_then(|e| e.to_str()).map(|e| e == "yml" || e == "yaml").unwrap_or(false);
             is_root_barzel_rule
         })
     }
@@ -158,11 +147,7 @@ fn git_repo_root(dir: &Path) -> Option<PathBuf> {
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(raw))
-    }
+    if raw.is_empty() { None } else { Some(PathBuf::from(raw)) }
 }
 
 #[cfg(test)]
@@ -172,34 +157,14 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_init(dir: &Path) {
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir).output().unwrap();
     }
 
     fn git_commit_all(dir: &Path, msg: &str) {
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", msg, "--allow-empty"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        Command::new("git").args(["add", "-A"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["commit", "-m", msg, "--allow-empty"]).current_dir(dir).output().unwrap();
     }
 
     #[test]
@@ -225,16 +190,8 @@ mod tests {
 
         // Record rev after initial commit
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         // Add a new file and commit
         fs::write(dir.path().join("b.txt"), b"second").unwrap();
@@ -253,16 +210,8 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
         assert!(ctx.changed_files.is_empty());
@@ -278,16 +227,8 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         fs::write(pkg.join("lib.rs"), b"pub fn f() {}").unwrap();
         git_commit_all(dir.path(), "change foo");
@@ -308,16 +249,8 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         fs::write(dir.path().join("Cargo.lock"), b"# lock").unwrap();
         git_commit_all(dir.path(), "update lock");
@@ -334,16 +267,8 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         fs::write(dir.path().join("lib.rs"), b"pub fn f() {}").unwrap();
         git_commit_all(dir.path(), "add lib");
@@ -360,29 +285,14 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            b"[package]\nname=\"a\"\nversion=\"2\"",
-        )
-        .unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"a\"\nversion=\"2\"").unwrap();
         git_commit_all(dir.path(), "bump version");
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
-        assert!(
-            ctx.forces_full_run(),
-            "root Cargo.toml change must force full run"
-        );
+        assert!(ctx.forces_full_run(), "root Cargo.toml change must force full run");
     }
 
     #[test]
@@ -393,29 +303,14 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
-        fs::write(
-            dir.path().join("package.json"),
-            br#"{"name":"root","version":"2"}"#,
-        )
-        .unwrap();
+        fs::write(dir.path().join("package.json"), br#"{"name":"root","version":"2"}"#).unwrap();
         git_commit_all(dir.path(), "bump version");
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
-        assert!(
-            ctx.forces_full_run(),
-            "root package.json change must force full run"
-        );
+        assert!(ctx.forces_full_run(), "root package.json change must force full run");
     }
 
     #[test]
@@ -428,25 +323,14 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         fs::write(pkg.join("package.json"), br#"{"name":"a","version":"2"}"#).unwrap();
         git_commit_all(dir.path(), "bump a");
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
-        assert!(
-            !ctx.forces_full_run(),
-            "nested package.json must not force full run"
-        );
+        assert!(!ctx.forces_full_run(), "nested package.json must not force full run");
         // But it DOES affect the package path
         assert!(ctx.affects_path(&pkg));
     }
@@ -457,37 +341,23 @@ mod tests {
         // because workspace-root rules are inherited by every member package.
         let dir = tempdir().unwrap();
         git_init(dir.path());
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            b"[workspace]\nmembers=[\"crates/a\"]\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join("Cargo.toml"), b"[workspace]\nmembers=[\"crates/a\"]\n").unwrap();
         let rules = dir.path().join(".barzel/rules");
         fs::create_dir_all(&rules).unwrap();
         fs::write(rules.join("shared.yml"), b"rules: []").unwrap();
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         // Modify the shared rule file
         fs::write(rules.join("shared.yml"), b"rules: [updated]").unwrap();
         git_commit_all(dir.path(), "update shared rule");
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
-        assert!(
-            ctx.forces_full_run(),
-            ".barzel/rules/*.yml change at repo root must force a full workspace run"
-        );
+        assert!(ctx.forces_full_run(),
+            ".barzel/rules/*.yml change at repo root must force a full workspace run");
     }
 
     #[test]
@@ -502,16 +372,8 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         fs::write(pkg_rules.join("api-rule.yml"), b"rules: [updated]").unwrap();
         git_commit_all(dir.path(), "update package rule");
@@ -531,25 +393,15 @@ mod tests {
         git_commit_all(dir.path(), "init");
 
         let rev = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+            Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir.path()).output().unwrap().stdout
+        ).unwrap().trim().to_string();
 
         // Write a new file but do NOT commit it (untracked)
         fs::write(dir.path().join("new_module.rs"), b"pub fn f() {}").unwrap();
 
         let ctx = DiffContext::since(dir.path(), &rev).unwrap();
         assert!(
-            ctx.changed_files
-                .iter()
-                .any(|p| p == &PathBuf::from("new_module.rs")),
+            ctx.changed_files.iter().any(|p| p == &PathBuf::from("new_module.rs")),
             "untracked new_module.rs must appear in changed_files"
         );
     }
