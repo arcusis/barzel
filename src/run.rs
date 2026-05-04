@@ -29,7 +29,7 @@ use crate::runners::stryker::StrykerRunner;
 use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The set of layer names accepted by `--layer` / stdio `layers`.
@@ -350,12 +350,38 @@ fn skip_report(project: &ProjectInfo, since: Option<&str>, ctx: &DiffContext) ->
 
 /// Filter workspace members whose roots contain changed files.
 /// Full-run bypass is handled by the caller before this helper is called.
+///
+/// The `"."` member (a workspace root that also carries a `[package]`) is a
+/// special case: its root IS the repo root, so `affects_path` would return true
+/// for every change anywhere in the workspace.  Instead, `"."` is selected only
+/// when at least one changed file falls outside every other member's subtree.
 fn select_active_members<'a>(
     members: &'a [(String, ProjectInfo)],
     ctx: &DiffContext,
 ) -> Vec<&'a (String, ProjectInfo)> {
+    // Pre-compute canonicalized roots of non-"." members for the exclusion check.
+    let non_root_roots: Vec<PathBuf> = members.iter()
+        .filter(|(pkg_path, _)| pkg_path != ".")
+        .map(|(_, m)| {
+            let p = Path::new(&m.root);
+            p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+        })
+        .collect();
+
     members.iter()
-        .filter(|(_, m)| ctx.affects_path(Path::new(&m.root)))
+        .filter(|(pkg_path, m)| {
+            if pkg_path == "." {
+                // Select root package only when a changed file is outside every
+                // other member — prevents every crates/* change from selecting ".".
+                ctx.changed_files.iter().any(|rel| {
+                    let abs = ctx.repo_root.join(rel);
+                    let abs = abs.canonicalize().unwrap_or(abs);
+                    !non_root_roots.iter().any(|r| abs.starts_with(r))
+                })
+            } else {
+                ctx.affects_path(Path::new(&m.root))
+            }
+        })
         .collect()
 }
 
@@ -1030,6 +1056,71 @@ mod tests {
         let active = select_active_members(&members, &ctx);
         assert_eq!(active.len(), 1,
             "a deletion inside a member must still mark that member as affected");
+    }
+
+    fn member_info_with_path(pkg_path: &str, root: &std::path::Path) -> (String, crate::detect::ProjectInfo) {
+        let info = crate::detect::ProjectInfo {
+            language: Language::Rust,
+            root: root.to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some(pkg_path.to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        (pkg_path.to_string(), info)
+    }
+
+    #[test]
+    fn dot_member_not_selected_when_only_sub_member_changed() {
+        let repo = tempfile::tempdir().unwrap();
+        git_init(repo.path());
+        let pkg_a = repo.path().join("crates/a");
+        std::fs::create_dir_all(&pkg_a).unwrap();
+        std::fs::write(pkg_a.join("lib.rs"), b"// a").unwrap();
+        git_commit_all(repo.path(), "init");
+        let rev = head_sha(repo.path());
+
+        std::fs::write(pkg_a.join("lib.rs"), b"// changed").unwrap();
+        git_commit_all(repo.path(), "touch crates/a only");
+
+        let ctx = DiffContext::since(repo.path(), &rev).unwrap();
+        let members = vec![
+            member_info_with_path(".", repo.path()),
+            member_info_with_path("crates/a", &pkg_a),
+        ];
+        let active = select_active_members(&members, &ctx);
+
+        let names: Vec<&str> = active.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(!names.contains(&"."), "root '.' must not be selected when only crates/a changed");
+        assert!(names.contains(&"crates/a"), "crates/a must be selected");
+    }
+
+    #[test]
+    fn dot_member_selected_when_root_file_changed() {
+        let repo = tempfile::tempdir().unwrap();
+        git_init(repo.path());
+        let pkg_a = repo.path().join("crates/a");
+        std::fs::create_dir_all(&pkg_a).unwrap();
+        let root_src = repo.path().join("src");
+        std::fs::create_dir_all(&root_src).unwrap();
+        std::fs::write(root_src.join("lib.rs"), b"// root").unwrap();
+        std::fs::write(pkg_a.join("lib.rs"), b"// a").unwrap();
+        git_commit_all(repo.path(), "init");
+        let rev = head_sha(repo.path());
+
+        std::fs::write(root_src.join("lib.rs"), b"// root changed").unwrap();
+        git_commit_all(repo.path(), "touch root src/lib.rs");
+
+        let ctx = DiffContext::since(repo.path(), &rev).unwrap();
+        let members = vec![
+            member_info_with_path(".", repo.path()),
+            member_info_with_path("crates/a", &pkg_a),
+        ];
+        let active = select_active_members(&members, &ctx);
+
+        let names: Vec<&str> = active.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.contains(&"."), "root '.' must be selected when src/lib.rs changed outside any sub-member");
+        assert!(!names.contains(&"crates/a"), "crates/a must not be selected when only root file changed");
     }
 
     // ── validate_requested_layers ─────────────────────────────────────────────
