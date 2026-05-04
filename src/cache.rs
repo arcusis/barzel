@@ -76,7 +76,30 @@ fn hash_python_packages(root: &Path, hasher: &mut DefaultHasher) {
         .collect();
     dirs.sort();
     for dir in dirs {
-        hash_dir_if_exists(&dir, hasher);
+        hash_python_package_recursive(&dir, hasher);
+    }
+}
+
+/// Recursively hash Python source files inside a package directory.
+/// Skips generated/cache directories at any depth so that bytecode and tool
+/// caches do not affect the structural cache key.
+fn hash_python_package_recursive(dir: &Path, hasher: &mut DefaultHasher) {
+    let Ok(mut entries) = std::fs::read_dir(dir) else { return; };
+    let mut paths: Vec<_> = entries.by_ref().flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if matches!(name, "__pycache__" | ".mypy_cache" | ".pytest_cache"
+                | ".tox" | ".venv" | "venv" | "build" | "dist")
+                || name.starts_with('.')
+            {
+                continue;
+            }
+            hash_python_package_recursive(&path, hasher);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("py") {
+            hash_file_content(&path, hasher);
+        }
     }
 }
 
@@ -397,22 +420,47 @@ mod tests {
 
     #[test]
     fn workspace_member_hash_is_isolated_from_sibling() {
-        let member_a = tempdir().unwrap();
-        let member_b = tempdir().unwrap();
+        // Use a realistic workspace layout: workspace/crates/a and workspace/crates/b
+        let ws = tempdir().unwrap();
+        let crates = ws.path().join("crates");
+        let member_a = crates.join("a");
+        let member_b = crates.join("b");
+        std::fs::create_dir_all(&member_a).unwrap();
+        std::fs::create_dir_all(&member_b).unwrap();
 
-        std::fs::write(member_a.path().join("Cargo.toml"), b"[package]\nname='a'").unwrap();
-        std::fs::write(member_b.path().join("Cargo.toml"), b"[package]\nname='b'").unwrap();
+        std::fs::write(member_a.join("Cargo.toml"), b"[package]\nname='a'").unwrap();
+        std::fs::write(member_b.join("Cargo.toml"), b"[package]\nname='b'").unwrap();
 
-        let ha1 = compute_project_hash(member_a.path(), Language::Rust);
-        let hb1 = compute_project_hash(member_b.path(), Language::Rust);
+        let ha1 = compute_project_hash(&member_a, Language::Rust);
+        let hb1 = compute_project_hash(&member_b, Language::Rust);
 
         // Modify member_b; member_a's hash must not change
-        std::fs::write(member_b.path().join("Cargo.toml"), b"[package]\nname='b-changed'").unwrap();
-        let ha2 = compute_project_hash(member_a.path(), Language::Rust);
-        let hb2 = compute_project_hash(member_b.path(), Language::Rust);
+        std::fs::write(member_b.join("Cargo.toml"), b"[package]\nname='b-changed'").unwrap();
+        let ha2 = compute_project_hash(&member_a, Language::Rust);
+        let hb2 = compute_project_hash(&member_b, Language::Rust);
 
-        assert_eq!(ha1, ha2, "member_a hash must not change when member_b changes");
+        assert_eq!(ha1, ha2, "member_a hash must not change when sibling member_b changes");
         assert_ne!(hb1, hb2, "member_b hash must change after its own file changes");
+    }
+
+    #[test]
+    fn python_pycache_dir_does_not_affect_hash() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), b"[project]\nname='x'").unwrap();
+
+        let pkg = dir.path().join("mypackage");
+        std::fs::create_dir(&pkg).unwrap();
+        std::fs::write(pkg.join("__init__.py"), b"").unwrap();
+        std::fs::write(pkg.join("core.py"), b"def run(): pass").unwrap();
+        let h1 = compute_project_hash(dir.path(), Language::Python);
+
+        // Add a __pycache__ directory with bytecode — must not change the hash
+        let pycache = pkg.join("__pycache__");
+        std::fs::create_dir(&pycache).unwrap();
+        std::fs::write(pycache.join("core.cpython-311.pyc"), b"\x00\x00bytecode").unwrap();
+        let h2 = compute_project_hash(dir.path(), Language::Python);
+
+        assert_eq!(h1, h2, "__pycache__ contents must not affect the Python structural cache hash");
     }
 
     // ── save / load round-trip ────────────────────────────────────────────────
