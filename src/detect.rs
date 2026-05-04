@@ -300,20 +300,27 @@ fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)
     members
 }
 
-/// Extract YAML list item values from pnpm-workspace.yaml content.
-/// Returns raw pattern strings (may include `!`-prefixed exclusions).
+/// Extract list items from the top-level `packages:` section of pnpm-workspace.yaml.
+/// Stops collecting when another top-level key (no leading whitespace, ends with `:`)
+/// begins, so values in other sections (ignoredBuiltDependencies, catalogs, …) are
+/// never mistaken for workspace members.
 fn parse_yaml_list_items(content: &str) -> Vec<String> {
-    content.lines()
-        .filter_map(|line| {
-            let s = line.trim().trim_start_matches('-').trim()
-                .trim_matches('"').trim_matches('\'');
-            if s.is_empty() || s.starts_with('#') || s.ends_with(':') {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        })
-        .collect()
+    let mut in_packages = false;
+    let mut result = Vec::new();
+    for line in content.lines() {
+        // Top-level key: no leading whitespace, non-empty, ends with ':'
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            let trimmed = line.trim();
+            in_packages = trimmed == "packages:";
+            continue;
+        }
+        if !in_packages { continue; }
+        let s = line.trim().trim_start_matches('-').trim()
+            .trim_matches('"').trim_matches('\'');
+        if s.is_empty() || s.starts_with('#') { continue; }
+        result.push(s.to_string());
+    }
+    result
 }
 
 /// True if `exclude_pat` (without leading `!`) matches `rel_path`.
@@ -1277,6 +1284,30 @@ mod tests {
                 let api_count = members.iter().filter(|(p, _)| p == "packages/api").count();
                 assert_eq!(api_count, 1, "packages/api must appear exactly once despite two matching patterns");
                 assert_eq!(members.len(), 2, "total members must be 2 (api + utils)");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn pnpm_other_yaml_sections_not_treated_as_workspace_members() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - \"packages/*\"\nignoredBuiltDependencies:\n  - \"tools/not-a-workspace\"\n").unwrap();
+        let member = dir.path().join("packages/core");
+        let false_positive = dir.path().join("tools/not-a-workspace");
+        fs::create_dir_all(&member).unwrap();
+        fs::create_dir_all(&false_positive).unwrap();
+        fs::write(member.join("package.json"), br#"{"name":"core"}"#).unwrap();
+        fs::write(false_positive.join("package.json"), br#"{"name":"not-a-member"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/core"), "packages/core must be detected");
+                assert!(!paths.contains(&"tools/not-a-workspace"),
+                    "tools/not-a-workspace must not be detected — it is in ignoredBuiltDependencies, not packages");
             }
             _ => panic!("Expected Multi"),
         }
