@@ -300,23 +300,50 @@ fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)
     members
 }
 
+/// Strip an inline YAML comment (`# …`) from a string, but only when the `#`
+/// appears outside single or double quotes.  Handles the common case of simple
+/// unescaped patterns; does not attempt full YAML escape-sequence processing.
+fn strip_yaml_inline_comment(s: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"'  if !in_single => in_double = !in_double,
+            b'#'  if !in_single && !in_double => return s[..i].trim_end(),
+            _ => {}
+        }
+        i += 1;
+    }
+    s
+}
+
 /// Extract list items from the top-level `packages:` section of pnpm-workspace.yaml.
 /// Stops collecting when another top-level key (no leading whitespace, ends with `:`)
 /// begins, so values in other sections (ignoredBuiltDependencies, catalogs, …) are
 /// never mistaken for workspace members.
+/// Inline comments (unquoted `#`) are stripped from both the section header and items.
 fn parse_yaml_list_items(content: &str) -> Vec<String> {
     let mut in_packages = false;
     let mut result = Vec::new();
     for line in content.lines() {
-        // Top-level key: no leading whitespace, non-empty, ends with ':'
+        // Top-level line: no leading whitespace.
         if !line.starts_with(' ') && !line.starts_with('\t') {
             let trimmed = line.trim();
-            in_packages = trimmed == "packages:";
+            // Blank lines and pure-comment lines do not end the current section.
+            if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+            // Strip inline comment before comparing so "packages: # comment" matches.
+            let bare = strip_yaml_inline_comment(trimmed);
+            in_packages = bare == "packages:";
             continue;
         }
         if !in_packages { continue; }
-        let s = line.trim().trim_start_matches('-').trim()
-            .trim_matches('"').trim_matches('\'');
+        // Strip list marker, then inline comment (respecting quotes), then quotes.
+        let after_dash = line.trim().trim_start_matches('-').trim();
+        let after_comment = strip_yaml_inline_comment(after_dash);
+        let s = after_comment.trim_matches('"').trim_matches('\'').trim();
         if s.is_empty() || s.starts_with('#') { continue; }
         result.push(s.to_string());
     }
@@ -1311,5 +1338,92 @@ mod tests {
             }
             _ => panic!("Expected Multi"),
         }
+    }
+
+    // ── pnpm inline-comment hardening ─────────────────────────────────────────
+
+    #[test]
+    fn pnpm_packages_key_with_inline_comment_is_recognized() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-workspace.yaml"),
+            b"packages: # workspace packages\n  - \"packages/*\" # all packages\n").unwrap();
+        let member = dir.path().join("packages/core");
+        fs::create_dir_all(&member).unwrap();
+        fs::write(member.join("package.json"), br#"{"name":"core"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/core"),
+                    "packages/core must be detected when packages: has an inline comment");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn pnpm_top_level_comment_between_key_and_items_does_not_end_section() {
+        let dir = tempdir().unwrap();
+        // A top-level comment line between the section key and its list items
+        // must not terminate the packages section.
+        fs::write(dir.path().join("pnpm-workspace.yaml"),
+            b"packages: # workspace packages\n# shared packages\n  - \"packages/*\" # all packages\n").unwrap();
+        let member = dir.path().join("packages/core");
+        fs::create_dir_all(&member).unwrap();
+        fs::write(member.join("package.json"), br#"{"name":"core"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/core"),
+                    "packages/core must be detected despite a top-level comment between key and items");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn pnpm_other_section_with_inline_comment_still_excluded() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - \"packages/*\"\nignoredBuiltDependencies: # comment\n  - \"tools/not-a-workspace\"\n").unwrap();
+        let member = dir.path().join("packages/core");
+        let false_positive = dir.path().join("tools/not-a-workspace");
+        fs::create_dir_all(&member).unwrap();
+        fs::create_dir_all(&false_positive).unwrap();
+        fs::write(member.join("package.json"), br#"{"name":"core"}"#).unwrap();
+        fs::write(false_positive.join("package.json"), br#"{"name":"not-a-member"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/core"));
+                assert!(!paths.contains(&"tools/not-a-workspace"),
+                    "ignoredBuiltDependencies with inline comment must not bleed into members");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn pnpm_quoted_hash_in_pattern_not_truncated() {
+        let dir = tempdir().unwrap();
+        // Pattern value containing # inside quotes must not be truncated.
+        // Using a directory name without # (filesystem-safe) but verifying the
+        // parser does not truncate a quoted value that has # before the closing quote.
+        // We encode this as a unit test on the helper directly.
+        assert_eq!(
+            strip_yaml_inline_comment(r#""packages/#internal" # comment"#),
+            r#""packages/#internal""#,
+            "# inside double quotes must not be treated as a comment marker"
+        );
+        assert_eq!(
+            strip_yaml_inline_comment("'apps/#beta' # comment"),
+            "'apps/#beta'",
+            "# inside single quotes must not be treated as a comment marker"
+        );
     }
 }
