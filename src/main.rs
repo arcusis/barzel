@@ -1785,21 +1785,21 @@ fail_on = "high"
     #[test]
     fn fail_on_any_info_only_exits_1() {
         let r = exit_code_report("any", 1, 0, 0, 0, 0);
-        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
-            "fail_on=any must fail for info-only report");
+        assert_eq!(report_exit_code(&r), ExitCode::from(1),
+            "fail_on=any must exit 1 for info-only report");
     }
 
     #[test]
     fn fail_on_low_with_low_finding_exits_1() {
         let r = exit_code_report("low", 0, 1, 0, 0, 0);
-        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
-            "fail_on=low must fail when a low finding is present");
+        assert_eq!(report_exit_code(&r), ExitCode::from(1),
+            "fail_on=low must exit 1 when a low finding is present");
     }
 
     #[test]
     fn fail_on_low_with_medium_finding_exits_1() {
         let r = exit_code_report("low", 0, 0, 1, 0, 0);
-        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
-            "fail_on=low must fail when a medium finding is present");
+        assert_eq!(report_exit_code(&r), ExitCode::from(1),
+            "fail_on=low must exit 1 when a medium finding is present");
     }
 }
