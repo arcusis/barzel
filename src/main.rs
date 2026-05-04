@@ -269,7 +269,7 @@ fn build_stdio_history_payload(
 /// Build the `data` payload for a stdio `report` command.
 ///
 /// - `id = None` or `id = Some("latest")` → loads the most recent report.
-/// - `id = Some(prefix)` → loads by id prefix using the existing `load_by_id` scan.
+/// - `id = Some(prefix)` → loads by exact full ID or unambiguous prefix; ambiguous prefixes return Err.
 /// - `compare = Some([baseline, head])` → runs compare_reports and returns comparison data.
 ///
 /// Returns a structured error on not-found or malformed requests.
@@ -1565,7 +1565,21 @@ mod tests {
         let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), None, None, None);
         assert_eq!(payload["returned"].as_u64(), Some(0));
         assert_eq!(payload["total"].as_u64(), Some(0));
+        assert_eq!(payload["limit"].as_u64(), Some(20), "default limit must be 20");
         assert!(payload["entries"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn history_limit_above_cap_is_clamped_to_200() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write 2 entries — far fewer than 200; assert limit in response is capped.
+        save_history(&dir, &history_entry(None, "python", 2));
+        save_history(&dir, &history_entry(None, "python", 1));
+
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), Some(999), None, None);
+        assert_eq!(payload["limit"].as_u64(), Some(200), "limit must be capped at 200");
+        assert_eq!(payload["returned"].as_u64(), Some(2), "returned must not exceed available entries");
+        assert_eq!(payload["total"].as_u64(), Some(2));
     }
 
     #[test]
