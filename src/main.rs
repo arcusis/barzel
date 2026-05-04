@@ -44,6 +44,12 @@ struct StdioRequest {
     /// Git revision for diff mode: only verify packages changed since this rev.
     #[serde(default)]
     since: Option<String>,
+    /// Report id/prefix or "latest" for the `report` command.
+    #[serde(default)]
+    id: Option<String>,
+    /// Two-element array `[baseline_ref, head_ref]` for the `report` compare command.
+    #[serde(default)]
+    compare: Option<Vec<String>>,
 }
 
 #[derive(serde::Serialize)]
@@ -170,11 +176,59 @@ fn handle_stdio() -> ExitCode {
             }
         }
 
+        "report" => {
+            let target = req.project_path.as_deref().unwrap_or(".");
+            match build_stdio_report_payload(target, req.id.as_deref(), req.compare.as_deref()) {
+                Ok(payload) => {
+                    let resp = create_response("success", request_id, Some(payload), None);
+                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    emit_error(request_id, e.to_string());
+                    ExitCode::from(1)
+                }
+            }
+        }
+
         other => {
-            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check", other));
+            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check, report", other));
             ExitCode::from(1)
         }
     }
+}
+
+/// Build the `data` payload for a stdio `report` command.
+///
+/// - `id = None` or `id = Some("latest")` → loads the most recent report.
+/// - `id = Some(prefix)` → loads by id prefix using the existing `load_by_id` scan.
+/// - `compare = Some([baseline, head])` → runs compare_reports and returns comparison data.
+///
+/// Returns a structured error on not-found or malformed requests.
+fn build_stdio_report_payload(
+    target: &str,
+    id: Option<&str>,
+    compare: Option<&[String]>,
+) -> crate::error::Result<serde_json::Value> {
+    let base = std::path::Path::new(target);
+
+    if let Some(refs) = compare {
+        if refs.len() != 2 {
+            return Err(crate::error::BarzelError::Detection(
+                format!("compare requires exactly 2 report refs, got {}", refs.len())
+            ));
+        }
+        let baseline = load_report_by_ref(base, &refs[0])?;
+        let head     = load_report_by_ref(base, &refs[1])?;
+        let cmp = compare::compare_reports(&baseline, &head);
+        return Ok(serde_json::json!({ "comparison": cmp }));
+    }
+
+    let id_ref = id.unwrap_or("latest");
+    let report = load_report_by_ref(base, id_ref)?;
+    let report_json = serde_json::to_value(&report)
+        .map_err(|e| crate::error::BarzelError::Detection(e.to_string()))?;
+    Ok(serde_json::json!({ "report": report_json }))
 }
 
 /// Build the structured data payload an AI agent receives after `run`.
@@ -1285,5 +1339,127 @@ mod tests {
         assert_eq!(items[0]["package_path"].as_str(), Some("pkg-b"));
         assert_eq!(items[1]["package_path"].as_str(), Some("pkg-c"));
         assert_eq!(items[2]["package_path"].as_str(), Some("pkg-a"));
+    }
+
+    // ── stdio report command ──────────────────────────────────────────────────
+
+    fn saved_report(dir: &tempfile::TempDir) -> BarzelReport {
+        let project = ProjectInfo {
+            language: Language::Rust,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some("myapp".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut report = BarzelReport::new(project);
+        report.add_layer(make_layer("hostile", "semgrep", vec![
+            make_finding(Severity::High, "SQL_INJECT"),
+        ]));
+        report.save(dir.path()).unwrap();
+        report
+    }
+
+    #[test]
+    fn stdio_report_latest_returns_full_report_with_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = saved_report(&dir);
+
+        let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), None, None).unwrap();
+        let report_json = &payload["report"];
+        assert_eq!(report_json["id"].as_str(), Some(saved.id.as_str()),
+            "data.report.id must match the saved report's id");
+        assert_eq!(report_json["project"]["package_name"].as_str(), Some("myapp"));
+    }
+
+    #[test]
+    fn stdio_report_by_id_prefix_returns_matching_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = saved_report(&dir);
+        let prefix = &saved.id[..8];
+
+        let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), Some(prefix), None).unwrap();
+        assert_eq!(payload["report"]["id"].as_str(), Some(saved.id.as_str()));
+    }
+
+    #[test]
+    fn stdio_report_latest_keyword_resolves_to_most_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = saved_report(&dir);
+
+        let payload = build_stdio_report_payload(dir.path().to_str().unwrap(), Some("latest"), None).unwrap();
+        assert_eq!(payload["report"]["id"].as_str(), Some(saved.id.as_str()));
+    }
+
+    #[test]
+    fn stdio_report_not_found_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        // No reports saved — should return Err
+        let result = build_stdio_report_payload(dir.path().to_str().unwrap(), None, None);
+        assert!(result.is_err(), "missing report must return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not found") || msg.contains("latest"),
+            "error message must reference what was not found: {msg}");
+    }
+
+    #[test]
+    fn stdio_report_unknown_id_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let _ = saved_report(&dir);
+        let result = build_stdio_report_payload(dir.path().to_str().unwrap(), Some("nonexistent"), None);
+        assert!(result.is_err(), "unknown report id must return Err");
+    }
+
+    #[test]
+    fn stdio_compare_returns_verdict_and_summary_delta() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let project = || ProjectInfo {
+            language: Language::Rust,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some("myapp".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+
+        // baseline: clean (no findings)
+        let baseline_report = BarzelReport::new(project());
+        baseline_report.save(dir.path()).unwrap();
+        let baseline_id = baseline_report.id.clone();
+
+        // Small delay so head has a strictly later timestamp
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        // head: new High finding → regression
+        let mut head_report = BarzelReport::new(project());
+        head_report.add_layer(make_layer("hostile", "semgrep", vec![
+            make_finding(Severity::High, "VULN_NEW"),
+        ]));
+        head_report.save(dir.path()).unwrap();
+        let head_id = head_report.id.clone();
+
+        let refs = vec![baseline_id[..8].to_string(), head_id[..8].to_string()];
+        let payload = build_stdio_report_payload(
+            dir.path().to_str().unwrap(), None, Some(&refs),
+        ).unwrap();
+
+        let cmp = &payload["comparison"];
+        assert_eq!(cmp["verdict"].as_str(), Some("regressed"),
+            "new High finding in head must produce verdict=regressed");
+        assert_eq!(cmp["summary_delta"]["high"].as_i64(), Some(1),
+            "high must increase by 1 from baseline to head");
+        assert!(cmp["regressions"].as_array().map(|v| !v.is_empty()).unwrap_or(false),
+            "regressions must be non-empty");
+    }
+
+    #[test]
+    fn stdio_compare_wrong_length_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = vec!["only-one".to_string()];
+        let result = build_stdio_report_payload(dir.path().to_str().unwrap(), None, Some(&refs));
+        assert!(result.is_err(), "single-element compare must return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("2"), "error must mention expected count of 2: {msg}");
     }
 }
