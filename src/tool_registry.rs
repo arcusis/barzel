@@ -159,23 +159,36 @@ pub fn apply_applicability_workspace(
     members: &[(String, ProjectInfo)],
     config: &BarzelConfig,
 ) {
+    // Load each member's effective config once before the status loop so a workspace
+    // with N members and T tools reads each .barzel.toml once, not T times.
+    let local_configs: Vec<Option<BarzelConfig>> = members
+        .iter()
+        .map(|(_, project)| {
+            let root = Path::new(&project.root);
+            if root.join(".barzel.toml").exists() {
+                Some(BarzelConfig::load_for_project(root))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let member_enabled_layers: Vec<&Vec<String>> = local_configs
+        .iter()
+        .map(|opt| opt.as_ref().map_or(&config.layers.enabled, |c| &c.layers.enabled))
+        .collect();
+
     for s in statuses.iter_mut() {
         let mut contributing: Vec<String> = Vec::new();
         let mut any_applicable = false;
         let mut any_required = false;
 
-        for (rel_path, project) in members {
+        for ((rel_path, project), enabled) in members.iter().zip(member_enabled_layers.iter()) {
             let root = Path::new(&project.root);
             let ws_root = project.workspace_root.as_deref().map(Path::new);
             let (applicable, _) = tool_applicability(s.name, project.language, root, ws_root);
             if applicable {
                 any_applicable = true;
-                let effective_cfg = if root.join(".barzel.toml").exists() {
-                    std::borrow::Cow::Owned(BarzelConfig::load_for_project(root))
-                } else {
-                    std::borrow::Cow::Borrowed(config)
-                };
-                let layer_enabled = effective_cfg.layers.enabled.iter().any(|e| e == s.layer || s.layer == "core");
+                let layer_enabled = enabled.iter().any(|e| e == s.layer || s.layer == "core");
                 if layer_enabled { any_required = true; }
                 let lang = project.language.to_string().to_lowercase();
                 contributing.push(format!("{} ({})", rel_path, lang));
