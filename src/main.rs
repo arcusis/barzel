@@ -1088,4 +1088,200 @@ mod tests {
         assert!(payload.get("language").is_none(), "Multi must not emit top-level language");
         assert!(payload.get("frameworks").is_none(), "Multi must not emit top-level frameworks");
     }
+
+    // ── run-data invariant helpers ────────────────────────────────────────────
+
+    /// Required keys every action_item must carry, checked for the agent-facing contract.
+    const ACTION_ITEM_REQUIRED_KEYS: &[&str] = &[
+        "priority", "layer", "runner", "severity", "code", "message", "reproduce_cmd",
+    ];
+
+    /// Assert all action_items satisfy the agent-facing contract:
+    /// - every required key is present
+    /// - reproduce_cmd is non-null (agents must be able to run it)
+    /// - items are sorted by priority (critical=1 first)
+    fn assert_action_items_contract(payload: &serde_json::Value) {
+        let items = payload["action_items"].as_array()
+            .expect("action_items must be an array");
+
+        for (i, item) in items.iter().enumerate() {
+            for key in ACTION_ITEM_REQUIRED_KEYS {
+                assert!(
+                    item.get(*key).is_some(),
+                    "action_item[{i}] missing required key '{key}'"
+                );
+            }
+            assert!(
+                !item["reproduce_cmd"].is_null(),
+                "action_item[{i}] has null reproduce_cmd (code={:?})",
+                item["code"].as_str().unwrap_or("?")
+            );
+        }
+
+        let priorities: Vec<u64> = items.iter()
+            .map(|v| v["priority"].as_u64().unwrap_or(99))
+            .collect();
+        let mut sorted = priorities.clone();
+        sorted.sort();
+        assert_eq!(priorities, sorted, "action_items must be sorted by priority (critical first)");
+    }
+
+    /// Assert the top-level keys all run payloads must carry.
+    fn assert_run_payload_required_keys(payload: &serde_json::Value) {
+        for key in &["passed", "overall_status", "action_items", "layers",
+                     "total_findings", "critical", "high", "medium", "low",
+                     "report_id", "timestamp"] {
+            assert!(payload.get(*key).is_some(), "run payload missing required key '{key}'");
+        }
+    }
+
+    // ── reproduce_cmd invariant ────────────────────────────────────────────────
+
+    #[test]
+    fn single_project_action_items_all_satisfy_contract() {
+        let project = ProjectInfo {
+            language: Language::Python,
+            root: "/tmp/single".to_string(),
+            has_tests: true,
+            package_name: Some("myapp".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut report = BarzelReport::new(project);
+        report.layers = vec![make_layer("hostile", "bandit", vec![
+            make_finding(Severity::Critical, "SQL_INJECTION"),
+            make_finding(Severity::High,     "OPEN_REDIRECT"),
+            make_finding(Severity::Medium,   "WEAK_CIPHER"),
+        ])];
+        report.status = ReportStatus::Fail;
+
+        let payload = build_run_data(&report);
+        assert_action_items_contract(&payload);
+        assert_eq!(payload["action_items"].as_array().unwrap().len(), 3,
+            "all three non-info findings must appear as action_items");
+    }
+
+    #[test]
+    fn workspace_action_items_all_satisfy_contract() {
+        let payload = build_run_data(&workspace_report());
+        assert_action_items_contract(&payload);
+    }
+
+    #[test]
+    fn info_findings_are_excluded_from_action_items() {
+        let project = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp/p".to_string(),
+            has_tests: true,
+            package_name: Some("p".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut report = BarzelReport::new(project);
+        report.layers = vec![make_layer("logic", "cargo-test", vec![
+            make_finding(Severity::Info, "TESTS_PASSED"),
+            make_finding(Severity::High, "MUTATION_SURVIVED"),
+        ])];
+        report.status = ReportStatus::Partial;
+
+        let payload = build_run_data(&report);
+        let items = payload["action_items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "only the High finding must appear; Info must be excluded");
+        assert_eq!(items[0]["code"].as_str(), Some("MUTATION_SURVIVED"));
+    }
+
+    // ── run payload required-key contract ─────────────────────────────────────
+
+    #[test]
+    fn run_payload_single_has_required_keys() {
+        let project = ProjectInfo {
+            language: Language::Go,
+            root: "/tmp/go".to_string(),
+            has_tests: true,
+            package_name: Some("svc".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let report = BarzelReport::new(project);
+        let payload = build_run_data(&report);
+
+        assert_run_payload_required_keys(&payload);
+        assert!(payload.get("is_workspace").is_none(), "Single must not emit is_workspace");
+        assert!(payload.get("packages").is_none(),     "Single must not emit packages");
+    }
+
+    #[test]
+    fn run_payload_workspace_has_required_keys_plus_workspace_fields() {
+        let payload = build_run_data(&workspace_report());
+
+        assert_run_payload_required_keys(&payload);
+        assert_eq!(payload["is_workspace"].as_bool(), Some(true));
+        assert!(payload["packages"].is_array(), "workspace payload must include packages array");
+    }
+
+    // ── global cross-package priority order ────────────────────────────────────
+
+    #[test]
+    fn workspace_mixed_findings_global_priority_order() {
+        let project = ProjectInfo {
+            language: Language::Unknown,
+            root: "/tmp/ws".to_string(),
+            has_tests: true,
+            package_name: Some("ws".to_string()),
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut report = BarzelReport::new(project);
+        report.status = ReportStatus::Fail;
+
+        // pkg-a: Medium only; pkg-b: Critical only; pkg-c: High only.
+        // After flattening, expected order: Critical(pkg-b), High(pkg-c), Medium(pkg-a).
+        report.workspace_members = vec![
+            WorkspaceMemberReport {
+                package_path: "pkg-a".to_string(),
+                language: "rust".to_string(),
+                status: ReportStatus::Partial,
+                layers: vec![make_layer("structural", "mutants", vec![
+                    make_finding(Severity::Medium, "MUTANT_SURVIVED"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 0, high: 0, medium: 1, low: 0,
+                    overall_status: ReportStatus::Partial },
+            },
+            WorkspaceMemberReport {
+                package_path: "pkg-b".to_string(),
+                language: "typescript".to_string(),
+                status: ReportStatus::Fail,
+                layers: vec![make_layer("hostile", "semgrep", vec![
+                    make_finding(Severity::Critical, "HARDCODED_SECRET"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 1, high: 0, medium: 0, low: 0,
+                    overall_status: ReportStatus::Fail },
+            },
+            WorkspaceMemberReport {
+                package_path: "pkg-c".to_string(),
+                language: "python".to_string(),
+                status: ReportStatus::Partial,
+                layers: vec![make_layer("logic", "pytest", vec![
+                    make_finding(Severity::High, "TEST_FAILURE"),
+                ])],
+                summary: Summary { total_findings: 1, critical: 0, high: 1, medium: 0, low: 0,
+                    overall_status: ReportStatus::Partial },
+            },
+        ];
+        report.layers = report.workspace_members.iter()
+            .flat_map(|m| m.layers.clone()).collect();
+
+        let payload = build_run_data(&report);
+        assert_action_items_contract(&payload);
+
+        let items = payload["action_items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["code"].as_str(), Some("HARDCODED_SECRET"), "Critical must be first");
+        assert_eq!(items[1]["code"].as_str(), Some("TEST_FAILURE"),      "High must be second");
+        assert_eq!(items[2]["code"].as_str(), Some("MUTANT_SURVIVED"),   "Medium must be last");
+        // Verify package_path is preserved after reordering
+        assert_eq!(items[0]["package_path"].as_str(), Some("pkg-b"));
+        assert_eq!(items[1]["package_path"].as_str(), Some("pkg-c"));
+        assert_eq!(items[2]["package_path"].as_str(), Some("pkg-a"));
+    }
 }
