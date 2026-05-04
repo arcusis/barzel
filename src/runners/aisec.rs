@@ -154,7 +154,9 @@ impl TestRunner for AiSecRunner {
                     project.language,
                     project.frameworks.ai_frameworks.join(", ")
                 ),
-                reproduce_cmd: None,
+                reproduce_cmd: Some(
+                    "barzel run --layer hostile --json".to_string()
+                ),
                 suggestion: Some(
                     "Consider adding adversarial prompt tests. \
                      Test with inputs like 'Ignore all previous instructions and...' \
@@ -383,6 +385,10 @@ mod tests {
 
         assert!(result.findings.iter().any(|f| f.code == "AI_SEC_PASSED"));
         assert!(matches!(result.status, LayerStatus::Pass));
+
+        let passed = result.findings.iter().find(|f| f.code == "AI_SEC_PASSED").unwrap();
+        let rc = passed.reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!rc.trim().is_empty(), "AI_SEC_PASSED finding must have non-empty reproduce_cmd");
     }
 
     #[test]
