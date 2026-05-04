@@ -50,6 +50,15 @@ struct StdioRequest {
     /// Two-element array `[baseline_ref, head_ref]` for the `report` compare command.
     #[serde(default)]
     compare: Option<Vec<String>>,
+    /// Maximum number of history entries to return. Default 20, cap 200. 0 returns empty.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Filter history entries by exact package_path (workspace member path).
+    #[serde(default)]
+    package_path: Option<String>,
+    /// Filter history entries by exact language string.
+    #[serde(default)]
+    language: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -191,17 +200,76 @@ fn handle_stdio() -> ExitCode {
             }
         }
 
+        "history" => {
+            let target = req.project_path.as_deref().unwrap_or(".");
+            let payload = build_stdio_history_payload(
+                target,
+                req.limit,
+                req.package_path.as_deref(),
+                req.language.as_deref(),
+            );
+            let resp = create_response("success", request_id, Some(payload), None);
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            ExitCode::SUCCESS
+        }
+
         other => {
-            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check, report", other));
+            emit_error(request_id, format!("unknown command: '{}'. Valid commands: init, run, check, report, history", other));
             ExitCode::from(1)
         }
     }
 }
 
+/// Build the `data` payload for a stdio `history` command.
+///
+/// Returns entries newest-first, filtered by optional package_path and language.
+/// Default limit: 20. Cap: 200. limit=0 returns an empty entries array.
+fn build_stdio_history_payload(
+    target: &str,
+    limit: Option<usize>,
+    package_path: Option<&str>,
+    language: Option<&str>,
+) -> serde_json::Value {
+    const DEFAULT_LIMIT: usize = 20;
+    const MAX_LIMIT: usize = 200;
+
+    let effective_limit = match limit {
+        None => DEFAULT_LIMIT,
+        Some(n) => n.min(MAX_LIMIT),
+    };
+
+    // load_history_entries returns ascending; reverse for newest-first.
+    let mut all: Vec<crate::history::HistoryEntry> =
+        crate::history::load_history_entries(std::path::Path::new(target));
+    all.reverse();
+
+    // Apply optional exact filters.
+    let filtered: Vec<_> = all
+        .into_iter()
+        .filter(|e| {
+            package_path
+                .map(|p| e.package_path.as_deref() == Some(p))
+                .unwrap_or(true)
+                && language.map(|l| e.language == l).unwrap_or(true)
+        })
+        .collect();
+
+    let total = filtered.len();
+    let entries: Vec<_> = filtered.into_iter().take(effective_limit).collect();
+    let returned = entries.len();
+
+    serde_json::json!({
+        "entries":       entries,
+        "returned":      returned,
+        "total":         total,
+        "limit":         effective_limit,
+    })
+}
+
 /// Build the `data` payload for a stdio `report` command.
 ///
 /// - `id = None` or `id = Some("latest")` → loads the most recent report.
-/// - `id = Some(prefix)` → loads by id prefix using the existing `load_by_id` scan.
+/// - `id = Some(prefix)` → loads by exact full ID or unambiguous prefix; ambiguous prefixes return Err.
 /// - `compare = Some([baseline, head])` → runs compare_reports and returns comparison data.
 ///
 /// Returns a structured error on not-found or malformed requests.
@@ -1461,5 +1529,127 @@ mod tests {
         assert!(result.is_err(), "single-element compare must return Err");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("2"), "error must mention expected count of 2: {msg}");
+    }
+
+    // ── stdio history command ─────────────────────────────────────────────────
+
+    fn history_entry(
+        package_path: Option<&str>,
+        language: &str,
+        hours_ago: i64,
+    ) -> crate::history::HistoryEntry {
+        use crate::report::{LayerStatus, ReportStatus};
+        crate::history::HistoryEntry {
+            report_id: format!("hist-{}-{}", language, hours_ago),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(hours_ago),
+            project: "myapp".to_string(),
+            package_path: package_path.map(str::to_string),
+            language: language.to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![crate::history::HistoryLayerMetric {
+                runner: "pytest".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: None,
+                coverage: Some(0.90 - hours_ago as f64 * 0.01),
+            }],
+        }
+    }
+
+    fn save_history(dir: &tempfile::TempDir, entry: &crate::history::HistoryEntry) {
+        crate::history::save_entry(entry, dir.path()).unwrap();
+    }
+
+    #[test]
+    fn history_no_entries_returns_empty_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), None, None, None);
+        assert_eq!(payload["returned"].as_u64(), Some(0));
+        assert_eq!(payload["total"].as_u64(), Some(0));
+        assert_eq!(payload["limit"].as_u64(), Some(20), "default limit must be 20");
+        assert!(payload["entries"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn history_limit_above_cap_is_clamped_to_200() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write 2 entries — far fewer than 200; assert limit in response is capped.
+        save_history(&dir, &history_entry(None, "python", 2));
+        save_history(&dir, &history_entry(None, "python", 1));
+
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), Some(999), None, None);
+        assert_eq!(payload["limit"].as_u64(), Some(200), "limit must be capped at 200");
+        assert_eq!(payload["returned"].as_u64(), Some(2), "returned must not exceed available entries");
+        assert_eq!(payload["total"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn history_entries_returned_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        save_history(&dir, &history_entry(None, "python", 3));
+        save_history(&dir, &history_entry(None, "python", 1));
+        save_history(&dir, &history_entry(None, "python", 2));
+
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), None, None, None);
+        let entries = payload["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 3);
+        // Newest-first: hours_ago 1, then 2, then 3
+        let ids: Vec<&str> = entries.iter().map(|e| e["report_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["hist-python-1", "hist-python-2", "hist-python-3"],
+            "entries must be newest-first");
+    }
+
+    #[test]
+    fn history_limit_truncates_returned_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for h in 1..=5 {
+            save_history(&dir, &history_entry(None, "python", h));
+        }
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), Some(2), None, None);
+        assert_eq!(payload["returned"].as_u64(), Some(2), "limit must cap returned entries");
+        assert_eq!(payload["total"].as_u64(), Some(5), "total must reflect all filtered entries");
+        assert_eq!(payload["limit"].as_u64(), Some(2));
+        assert_eq!(payload["entries"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn history_limit_zero_returns_empty_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        save_history(&dir, &history_entry(None, "python", 1));
+        let payload = build_stdio_history_payload(dir.path().to_str().unwrap(), Some(0), None, None);
+        assert_eq!(payload["returned"].as_u64(), Some(0));
+        assert_eq!(payload["total"].as_u64(), Some(1), "total must still reflect filtered count");
+        assert!(payload["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn history_package_path_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        save_history(&dir, &history_entry(Some("crates/api"), "rust", 2));
+        save_history(&dir, &history_entry(Some("apps/web"), "typescript", 1));
+
+        let payload = build_stdio_history_payload(
+            dir.path().to_str().unwrap(), None, Some("crates/api"), None,
+        );
+        let entries = payload["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "only crates/api must be returned");
+        assert_eq!(
+            entries[0]["package_path"].as_str(),
+            Some("crates/api")
+        );
+        assert_eq!(payload["total"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn history_language_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        save_history(&dir, &history_entry(None, "rust", 2));
+        save_history(&dir, &history_entry(None, "python", 1));
+
+        let payload = build_stdio_history_payload(
+            dir.path().to_str().unwrap(), None, None, Some("rust"),
+        );
+        let entries = payload["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "only rust entries must be returned");
+        assert_eq!(entries[0]["language"].as_str(), Some("rust"));
     }
 }
