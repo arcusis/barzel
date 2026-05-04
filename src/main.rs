@@ -172,7 +172,10 @@ fn handle_stdio() -> ExitCode {
             match detect::detect_workspace(target) {
                 Ok(workspace) => {
                     use crate::process::OsProcessRunner;
-                    let cfg = config::BarzelConfig::load_for_project(target);
+                    let cfg = match config::BarzelConfig::try_load_for_project(target) {
+                        Ok(c) => c,
+                        Err(e) => { emit_error(request_id, e.to_string()); return ExitCode::from(1); }
+                    };
                     if let Err(e) = cfg.validate() {
                         emit_error(request_id, e.to_string());
                         return ExitCode::from(1);
@@ -659,7 +662,8 @@ fn validate_workspace_member_configs(workspace: &detect::WorkspaceInfo) -> error
         if !config_path.exists() {
             continue;
         }
-        let mcfg = config::BarzelConfig::load_for_project(std::path::Path::new(&member.root));
+        let mcfg = config::BarzelConfig::try_load_for_project(std::path::Path::new(&member.root))
+            .map_err(|e| error::BarzelError::Config(format!("{}: {}", rel_path, e)))?;
         mcfg.validate().map_err(|e| {
             error::BarzelError::Config(format!("{}: {}", rel_path, e))
         })?;
@@ -715,7 +719,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
     use crate::process::OsProcessRunner;
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
-    let cfg = config::BarzelConfig::load_for_project(target);
+    let cfg = config::BarzelConfig::try_load_for_project(target)?;
     cfg.validate()?;
 
     let workspace = detect_workspace(target)?;
@@ -1311,6 +1315,22 @@ fail_on = "high"
         assert!(err.contains("crates/broken"), "error must name the member path: {err}");
         assert!(err.contains("layers.structural.mutation_threshold"), "error must name the bad key: {err}");
         assert!(err.contains("0.0..=100.0"), "error must state the valid range: {err}");
+    }
+
+    #[test]
+    fn validate_workspace_member_configs_returns_err_on_invalid_toml() {
+        use crate::detect::{WorkspaceInfo, WorkspaceKind};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".barzel.toml"), b"not: valid: toml: {{").unwrap();
+        let ws = WorkspaceInfo::Multi {
+            kind: WorkspaceKind::Cargo,
+            members: vec![
+                ("crates/broken".to_string(), make_project(Language::Rust, dir.path().to_str().unwrap())),
+            ],
+        };
+        let err = validate_workspace_member_configs(&ws).unwrap_err().to_string();
+        assert!(err.contains("crates/broken"), "error must name the member path: {err}");
+        assert!(err.contains(".barzel.toml"), "error must mention config path: {err}");
     }
 
     // ── run-data invariant helpers ────────────────────────────────────────────

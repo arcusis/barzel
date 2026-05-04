@@ -209,19 +209,31 @@ impl Default for BarzelConfig {
 impl BarzelConfig {
     /// Load from `.barzel.toml` in `root`, falling back to defaults if missing or unreadable.
     pub fn load_for_project(root: &Path) -> Self {
+        Self::try_load_for_project(root).unwrap_or_else(|e| {
+            eprintln!("barzel: warning: .barzel.toml is invalid — using defaults ({})", e);
+            Self::default()
+        })
+    }
+
+    /// Load from `.barzel.toml` in `root`, returning an error if the file exists but is
+    /// unreadable or contains invalid TOML. Returns `Ok(default)` when no file is present.
+    pub fn try_load_for_project(root: &Path) -> crate::error::Result<Self> {
         let config_path = root.join(".barzel.toml");
-        if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                match toml::from_str::<Self>(&content) {
-                    Ok(mut cfg) => {
-                        cfg.history = cfg.history.normalized();
-                        return cfg;
-                    }
-                    Err(e) => eprintln!("barzel: warning: .barzel.toml is invalid — using defaults ({})", e),
-                }
-            }
+        if !config_path.exists() {
+            return Ok(Self::default());
         }
-        Self::default()
+        let content = std::fs::read_to_string(&config_path).map_err(|e| {
+            crate::error::BarzelError::Config(format!(
+                "{}: {}", config_path.display(), e
+            ))
+        })?;
+        let mut cfg = toml::from_str::<Self>(&content).map_err(|e| {
+            crate::error::BarzelError::Config(format!(
+                "{}: {}", config_path.display(), e
+            ))
+        })?;
+        cfg.history = cfg.history.normalized();
+        Ok(cfg)
     }
 
     pub fn from_project_info(info: &crate::detect::ProjectInfo) -> Self {
@@ -369,6 +381,28 @@ fail_on = "critical"
         let def = BarzelConfig::default();
         assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
         assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
+    }
+
+    // ── try_load_for_project ──────────────────────────────────────────────────
+
+    #[test]
+    fn try_load_returns_default_when_no_config_file() {
+        let dir = tempdir().unwrap();
+        let cfg = BarzelConfig::try_load_for_project(dir.path())
+            .expect("missing config must be Ok(default)");
+        let def = BarzelConfig::default();
+        assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
+        assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
+    }
+
+    #[test]
+    fn try_load_returns_err_on_invalid_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".barzel.toml"), b"not: valid: toml: {{").unwrap();
+        let err = BarzelConfig::try_load_for_project(dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(".barzel.toml"), "error must mention config path: {err}");
     }
 
     // ── from_project_info ─────────────────────────────────────────────────────

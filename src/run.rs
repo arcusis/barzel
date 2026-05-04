@@ -75,7 +75,7 @@ pub fn run_verification(
 
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let workspace = detect_workspace(target_path)?;
-    let cfg = BarzelConfig::load_for_project(target_path);
+    let cfg = BarzelConfig::try_load_for_project(target_path)?;
     cfg.validate()?;
 
     // Resolve diff context when --since is provided.
@@ -231,7 +231,7 @@ pub fn run_verification(
                 }
 
                 let member_cfg = if Path::new(&member.root).join(".barzel.toml").exists() {
-                    let mcfg = BarzelConfig::load_for_project(Path::new(&member.root));
+                    let mcfg = BarzelConfig::try_load_for_project(Path::new(&member.root))?;
                     mcfg.validate()?;
                     mcfg
                 } else {
@@ -1038,5 +1038,18 @@ mod tests {
     fn operational_layer_still_accepted() {
         // Regression: existing tests that pass Some(vec!["operational"]) must not break
         validate_requested_layers(&strs(&["operational"])).unwrap();
+    }
+
+    // ── strict config loading ─────────────────────────────────────────────────
+
+    #[test]
+    fn run_verification_returns_err_on_invalid_root_toml() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".barzel.toml"), b"not: valid: toml: {{").unwrap();
+        let result = run_verification(Some(dir.path()), None, false, false, true, false, None);
+        assert!(result.is_err(), "run_verification must return Err for unparseable .barzel.toml");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains(".barzel.toml"), "error must mention config path: {msg}");
     }
 }
