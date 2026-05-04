@@ -446,7 +446,8 @@ fn report_exit_code(report: &BarzelReport) -> ExitCode {
     let fail = match report.fail_on.as_str() {
         "critical" => report.summary.critical > 0,
         "medium"   => report.summary.critical > 0 || report.summary.high > 0 || report.summary.medium > 0,
-        "any" | "low" => report.summary.total_findings > 0,
+        "low"      => report.summary.critical > 0 || report.summary.high > 0 || report.summary.medium > 0 || report.summary.low > 0,
+        "any"      => report.summary.total_findings > 0,
         _ => report.summary.critical > 0 || report.summary.high > 0, // "high" (default)
     };
 
@@ -1751,5 +1752,54 @@ fail_on = "high"
         let entries = payload["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1, "only rust entries must be returned");
         assert_eq!(entries[0]["language"].as_str(), Some("rust"));
+    }
+
+    // ── report_exit_code ─────────────────────────────────────────────────────
+
+    fn exit_code_report(fail_on: &str, info: usize, low: usize, medium: usize, high: usize, critical: usize) -> BarzelReport {
+        let project = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: ProjectFrameworks::default(),
+            workspace_root: None,
+        };
+        let mut r = BarzelReport::new(project);
+        r.fail_on = fail_on.to_string();
+        r.summary.total_findings = info + low + medium + high + critical;
+        r.summary.critical = critical;
+        r.summary.high     = high;
+        r.summary.medium   = medium;
+        r.summary.low      = low;
+        r
+    }
+
+    #[test]
+    fn fail_on_low_info_only_does_not_exit_1() {
+        let r = exit_code_report("low", 1, 0, 0, 0, 0);
+        assert_eq!(report_exit_code(&r), ExitCode::SUCCESS,
+            "fail_on=low must not fail for info-only report");
+    }
+
+    #[test]
+    fn fail_on_any_info_only_exits_1() {
+        let r = exit_code_report("any", 1, 0, 0, 0, 0);
+        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
+            "fail_on=any must fail for info-only report");
+    }
+
+    #[test]
+    fn fail_on_low_with_low_finding_exits_1() {
+        let r = exit_code_report("low", 0, 1, 0, 0, 0);
+        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
+            "fail_on=low must fail when a low finding is present");
+    }
+
+    #[test]
+    fn fail_on_low_with_medium_finding_exits_1() {
+        let r = exit_code_report("low", 0, 0, 1, 0, 0);
+        assert_ne!(report_exit_code(&r), ExitCode::SUCCESS,
+            "fail_on=low must fail when a medium finding is present");
     }
 }
