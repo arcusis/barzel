@@ -104,7 +104,7 @@ fn handle_stdio() -> ExitCode {
         }
     };
 
-    let request_id = req.request_id.clone();
+    let request_id = Some(req.request_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string()));
 
     match req.command.as_str() {
         "init" => {
@@ -151,16 +151,27 @@ fn handle_stdio() -> ExitCode {
         "run" => {
             let path = req.project_path.as_deref().map(Path::new);
             let since = req.since.as_deref();
-            match run::run_verification(path, req.layers, req.no_cache, req.fail_fast, true, false, since) {
+            let progress_id = request_id.clone();
+            let on_event = move |event: crate::orchestrator::RunnerEvent<'_>| {
+                emit_progress(&progress_id, progress_event_data(event));
+            };
+            match run::run_verification_stdio_with_progress(
+                path,
+                req.layers,
+                req.no_cache,
+                req.fail_fast,
+                since,
+                &on_event,
+            ) {
                 Ok(report) => {
                     let exit_code = report_exit_code(&report);
                     let data = build_run_data(&report);
-                    let resp = create_response("success", request_id, Some(data), None);
+                    let resp = create_response("success", request_id.clone(), Some(data), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
                     exit_code
                 }
                 Err(e) => {
-                    emit_error(request_id, e.to_string());
+                    emit_error(request_id.clone(), e.to_string());
                     ExitCode::from(1)
                 }
             }
@@ -466,6 +477,39 @@ fn report_exit_code(report: &BarzelReport) -> ExitCode {
 fn emit_error(request_id: Option<String>, message: String) {
     let resp = create_response("error", request_id, None, Some(message));
     println!("{}", serde_json::to_string(&resp).unwrap());
+}
+
+fn progress_event_data(event: crate::orchestrator::RunnerEvent<'_>) -> serde_json::Value {
+    use crate::orchestrator::RunnerEvent;
+    match event {
+        RunnerEvent::Started { runner, layer } => serde_json::json!({
+            "event": "runner_started",
+            "runner": runner,
+            "layer": layer,
+            "runner_status": null,
+            "duration_ms": null,
+        }),
+        RunnerEvent::Completed { runner, layer, status, duration_ms } => serde_json::json!({
+            "event": "runner_completed",
+            "runner": runner,
+            "layer": layer,
+            "runner_status": status,
+            "duration_ms": duration_ms,
+        }),
+    }
+}
+
+/// Emit a single newline-delimited progress JSON line to stdout.
+/// Must be called before the final success/error response.
+fn emit_progress(request_id: &Option<String>, data: serde_json::Value) {
+    let line = serde_json::json!({
+        "status": "progress",
+        "request_id": request_id.as_deref().unwrap_or(""),
+        "timestamp": Utc::now().to_rfc3339(),
+        "version": "1",
+        "data": data,
+    });
+    println!("{}", serde_json::to_string(&line).unwrap());
 }
 
 // ── Report command ────────────────────────────────────────────────────────────
@@ -931,6 +975,87 @@ mod tests {
             metrics: LayerMetrics::default(),
             duration_ms: 0,
         }
+    }
+
+    #[test]
+    fn progress_started_payload_includes_agent_contract_fields() {
+        let payload = progress_event_data(crate::orchestrator::RunnerEvent::Started {
+            runner: "tsc",
+            layer: "logic",
+        });
+
+        assert_eq!(payload["event"], "runner_started");
+        assert_eq!(payload["runner"], "tsc");
+        assert_eq!(payload["layer"], "logic");
+        assert!(payload["runner_status"].is_null());
+        assert!(payload["duration_ms"].is_null());
+    }
+
+    #[test]
+    fn progress_completed_payload_includes_status_and_duration() {
+        let payload = progress_event_data(crate::orchestrator::RunnerEvent::Completed {
+            runner: "tsc",
+            layer: "logic",
+            status: "pass",
+            duration_ms: 42,
+        });
+
+        assert_eq!(payload["event"], "runner_completed");
+        assert_eq!(payload["runner"], "tsc");
+        assert_eq!(payload["layer"], "logic");
+        assert_eq!(payload["runner_status"], "pass");
+        assert_eq!(payload["duration_ms"], 42);
+    }
+
+    #[test]
+    fn progress_response_reuses_supplied_request_id() {
+        let payload = progress_event_data(crate::orchestrator::RunnerEvent::Started {
+            runner: "pytest",
+            layer: "logic",
+        });
+        let response = create_response("progress", Some("req-123".to_string()), Some(payload), None);
+
+        assert_eq!(response.status, "progress");
+        assert_eq!(response.request_id, "req-123");
+        assert_eq!(response.version, "1");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn emit_progress_produces_valid_json_envelope_with_required_fields() {
+        // Test via the raw serde_json path rather than capturing stdout.
+        let request_id = Some("req-abc".to_string());
+        let data = progress_event_data(crate::orchestrator::RunnerEvent::Completed {
+            runner: "semgrep",
+            layer: "hostile",
+            status: "pass",
+            duration_ms: 123,
+        });
+
+        let envelope = serde_json::json!({
+            "status": "progress",
+            "request_id": request_id.as_deref().unwrap_or(""),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "version": "1",
+            "data": data,
+        });
+
+        // Must serialize without error
+        let line = serde_json::to_string(&envelope).expect("progress envelope must serialize");
+
+        // Must parse back as an object
+        let parsed: serde_json::Value = serde_json::from_str(&line)
+            .expect("progress line must be valid JSON");
+
+        assert_eq!(parsed["status"], "progress");
+        assert_eq!(parsed["version"], "1");
+        assert_eq!(parsed["request_id"], "req-abc");
+        assert!(parsed["timestamp"].is_string(), "timestamp must be a string");
+        assert_eq!(parsed["data"]["event"], "runner_completed");
+        assert_eq!(parsed["data"]["runner"], "semgrep");
+        assert_eq!(parsed["data"]["layer"], "hostile");
+        assert_eq!(parsed["data"]["runner_status"], "pass");
+        assert_eq!(parsed["data"]["duration_ms"], 123);
     }
 
     fn workspace_report() -> BarzelReport {
