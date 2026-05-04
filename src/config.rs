@@ -205,7 +205,10 @@ impl BarzelConfig {
         if config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 match toml::from_str::<Self>(&content) {
-                    Ok(cfg) => return cfg,
+                    Ok(mut cfg) => {
+                        cfg.history = cfg.history.normalized();
+                        return cfg;
+                    }
                     Err(e) => eprintln!("barzel: warning: .barzel.toml is invalid — using defaults ({})", e),
                 }
             }
@@ -767,6 +770,46 @@ mutation_regression_tolerance = 0.05
     fn enabled_flag_preserved_through_normalization() {
         let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
         assert!(!cfg.normalized().enabled);
+    }
+
+    #[test]
+    fn load_for_project_normalizes_invalid_tolerances() {
+        let dir = tempdir().unwrap();
+        let toml = r#"
+[project]
+name = "myapp"
+language = "python"
+
+[layers]
+enabled = ["logic", "structural", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+
+[history]
+enabled = true
+coverage_regression_tolerance = -0.2
+mutation_regression_tolerance = 2.0
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let cfg = BarzelConfig::load_for_project(dir.path());
+        assert_eq!(cfg.history.coverage_regression_tolerance, 0.0,
+            "negative tolerance in .barzel.toml must be clamped to 0.0 on load");
+        assert_eq!(cfg.history.mutation_regression_tolerance, 1.0,
+            "tolerance > 1.0 in .barzel.toml must be clamped to 1.0 on load");
     }
 
     #[test]
