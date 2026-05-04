@@ -272,6 +272,21 @@ impl BarzelConfig {
             )));
         }
 
+        let mt = self.layers.structural.mutation_threshold;
+        if !mt.is_finite() || !(0.0..=100.0).contains(&mt) {
+            return Err(crate::error::BarzelError::Config(format!(
+                "invalid layers.structural.mutation_threshold {mt}; must be a finite number in 0.0..=100.0"
+            )));
+        }
+
+        if let Some(mc) = self.layers.logic.min_coverage {
+            if !mc.is_finite() || !(0.0..=100.0).contains(&mc) {
+                return Err(crate::error::BarzelError::Config(format!(
+                    "invalid layers.logic.min_coverage {mc}; must be a finite number in 0.0..=100.0"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -1016,6 +1031,95 @@ enabled = false
         assert!(err.contains("severe"), "error must name the bad value: {err}");
         assert!(err.contains("critical"), "error must list valid thresholds: {err}");
         assert!(err.contains("any"), "error must list 'any' as valid: {err}");
+    }
+
+    // ── numeric threshold validation ──────────────────────────────────────────
+
+    #[test]
+    fn mutation_threshold_zero_is_valid() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = 0.0;
+        cfg.validate().expect("0.0 must be valid");
+    }
+
+    #[test]
+    fn mutation_threshold_hundred_is_valid() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = 100.0;
+        cfg.validate().expect("100.0 must be valid");
+    }
+
+    #[test]
+    fn mutation_threshold_negative_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = -1.0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.structural.mutation_threshold"), "error must name key: {err}");
+        assert!(err.contains("0.0..=100.0"), "error must state valid range: {err}");
+    }
+
+    #[test]
+    fn mutation_threshold_above_100_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = 101.0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.structural.mutation_threshold"), "error must name key: {err}");
+        assert!(err.contains("0.0..=100.0"), "error must state valid range: {err}");
+    }
+
+    #[test]
+    fn mutation_threshold_nan_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.structural.mutation_threshold = f64::NAN;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.structural.mutation_threshold"), "error must name key: {err}");
+    }
+
+    #[test]
+    fn min_coverage_none_is_valid() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = None;
+        cfg.validate().expect("None must be valid");
+    }
+
+    #[test]
+    fn min_coverage_zero_is_valid() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(0.0);
+        cfg.validate().expect("0.0 must be valid");
+    }
+
+    #[test]
+    fn min_coverage_hundred_is_valid() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(100.0);
+        cfg.validate().expect("100.0 must be valid");
+    }
+
+    #[test]
+    fn min_coverage_negative_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(-1.0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.logic.min_coverage"), "error must name key: {err}");
+        assert!(err.contains("0.0..=100.0"), "error must state valid range: {err}");
+    }
+
+    #[test]
+    fn min_coverage_above_100_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(101.0);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.logic.min_coverage"), "error must name key: {err}");
+        assert!(err.contains("0.0..=100.0"), "error must state valid range: {err}");
+    }
+
+    #[test]
+    fn min_coverage_nan_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.logic.min_coverage = Some(f64::NAN);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.logic.min_coverage"), "error must name key: {err}");
     }
 
     #[test]
