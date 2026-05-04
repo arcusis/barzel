@@ -309,6 +309,15 @@ pub(crate) fn build_stdio_report_payload(
     Ok(serde_json::json!({ "report": report_json }))
 }
 
+fn init_status_and_message(outcome: &crate::init::InitOutcome) -> (&'static str, &'static str) {
+    use crate::init::InitOutcome;
+    match outcome {
+        InitOutcome::Created     => ("created",     "project initialized"),
+        InitOutcome::Skipped     => ("skipped",     "config already exists"),
+        InitOutcome::Overwritten => ("overwritten", "config overwritten"),
+    }
+}
+
 // ── Command dispatcher ────────────────────────────────────────────────────────
 
 pub(crate) fn handle_stdio() -> ExitCode {
@@ -334,12 +343,7 @@ pub(crate) fn handle_stdio() -> ExitCode {
             let target = path.unwrap_or_else(|| Path::new("."));
             match crate::init::run_init(Some(target), true, req.force) {
                 Ok(outcome) => {
-                    use crate::init::InitOutcome;
-                    let (config_status, message) = match outcome {
-                        InitOutcome::Created     => ("created",    "project initialized"),
-                        InitOutcome::Skipped     => ("skipped",    "config already exists"),
-                        InitOutcome::Overwritten => ("overwritten", "config overwritten"),
-                    };
+                    let (config_status, message) = init_status_and_message(&outcome);
                     let project = crate::detect::detect_project(target).ok();
                     let resp = create_response(
                         "success",
@@ -1224,19 +1228,16 @@ mod tests {
     #[test]
     fn init_config_status_and_message_mapping() {
         use crate::init::InitOutcome;
-        // Verify the (config_status, message) pairs agents rely on
-        for (outcome, expected_status, expected_msg) in [
+        // Call the production helper used by handle_stdio so the test guards the actual contract.
+        let cases = [
             (InitOutcome::Created,     "created",     "project initialized"),
             (InitOutcome::Skipped,     "skipped",     "config already exists"),
-            (InitOutcome::Overwritten, "overwritten",  "config overwritten"),
-        ] {
-            let (status, msg) = match outcome {
-                InitOutcome::Created     => ("created",    "project initialized"),
-                InitOutcome::Skipped     => ("skipped",    "config already exists"),
-                InitOutcome::Overwritten => ("overwritten", "config overwritten"),
-            };
-            assert_eq!(status, expected_status, "config_status must match for {:?}", expected_status);
-            assert_eq!(msg, expected_msg, "message must match for {:?}", expected_msg);
+            (InitOutcome::Overwritten, "overwritten", "config overwritten"),
+        ];
+        for (outcome, expected_status, expected_msg) in cases {
+            let (status, msg) = init_status_and_message(&outcome);
+            assert_eq!(status, expected_status, "config_status must be '{expected_status}'");
+            assert_eq!(msg, expected_msg, "message must be '{expected_msg}'");
         }
     }
 
