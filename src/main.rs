@@ -173,6 +173,10 @@ fn handle_stdio() -> ExitCode {
                 Ok(workspace) => {
                     use crate::process::OsProcessRunner;
                     let cfg = config::BarzelConfig::load_for_project(target);
+                    if let Err(e) = cfg.validate() {
+                        emit_error(request_id, e.to_string());
+                        return ExitCode::from(1);
+                    }
                     let payload = build_check_payload(workspace, &cfg, &OsProcessRunner);
                     let resp = create_response("success", request_id, Some(payload), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
@@ -686,6 +690,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
     let cfg = config::BarzelConfig::load_for_project(target);
+    cfg.validate()?;
 
     let (statuses, header, frameworks) = match detect_workspace(target)? {
         WorkspaceInfo::Single(project) => {

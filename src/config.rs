@@ -234,6 +234,47 @@ impl BarzelConfig {
         cfg
     }
 
+    /// Validate semantically meaningful config fields.
+    /// Rejects empty layer lists, unknown layer names, and invalid `fail_on` values.
+    /// Syntax errors are caught earlier by TOML parsing; this covers parseable-but-wrong values.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        const VALID_LAYERS: &[&str] = &["logic", "structural", "hostile", "operational"];
+        const VALID_FAIL_ON: &[&str] = &["critical", "high", "medium", "low", "any"];
+
+        if self.layers.enabled.is_empty() {
+            return Err(crate::error::BarzelError::Config(format!(
+                "layers.enabled must not be empty; valid layers: {}",
+                VALID_LAYERS.join(", ")
+            )));
+        }
+
+        let bad_layers: Vec<&str> = self
+            .layers
+            .enabled
+            .iter()
+            .filter(|l| !VALID_LAYERS.contains(&l.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !bad_layers.is_empty() {
+            return Err(crate::error::BarzelError::Config(format!(
+                "unknown layer{} in layers.enabled: {}; valid layers: {}",
+                if bad_layers.len() == 1 { "" } else { "s" },
+                bad_layers.join(", "),
+                VALID_LAYERS.join(", ")
+            )));
+        }
+
+        if !VALID_FAIL_ON.contains(&self.reporting.fail_on.as_str()) {
+            return Err(crate::error::BarzelError::Config(format!(
+                "invalid reporting.fail_on '{}'; valid values: {}",
+                self.reporting.fail_on,
+                VALID_FAIL_ON.join(", ")
+            )));
+        }
+
+        Ok(())
+    }
+
     pub fn save(&self, path: &Path) -> crate::error::Result<()> {
         let content = toml::to_string_pretty(self)?;
         std::fs::write(path, content)?;
@@ -930,5 +971,90 @@ enabled = false
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
         assert!(!cfg.history.enabled, "history.enabled = false must parse correctly");
+    }
+
+    // ── BarzelConfig::validate ────────────────────────────────────────────────
+
+    #[test]
+    fn default_config_validates_successfully() {
+        BarzelConfig::default().validate().expect("default config must be valid");
+    }
+
+    #[test]
+    fn empty_layers_enabled_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.enabled = vec![];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("layers.enabled"), "error must mention layers.enabled: {err}");
+        assert!(err.contains("must not be empty"), "error must say 'must not be empty': {err}");
+        assert!(err.contains("logic"), "error must list valid layers: {err}");
+    }
+
+    #[test]
+    fn unknown_layer_in_enabled_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.enabled = vec!["security".to_string()];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("security"), "error must name the bad value: {err}");
+        assert!(err.contains("hostile"), "error must list valid layers: {err}");
+    }
+
+    #[test]
+    fn uppercase_layer_in_enabled_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.layers.enabled = vec!["Hostile".to_string()];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("Hostile"), "error must name the bad value: {err}");
+        assert!(err.contains("hostile"), "error must show correct casing: {err}");
+    }
+
+    #[test]
+    fn invalid_fail_on_is_rejected() {
+        let mut cfg = BarzelConfig::default();
+        cfg.reporting.fail_on = "severe".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("severe"), "error must name the bad value: {err}");
+        assert!(err.contains("critical"), "error must list valid thresholds: {err}");
+        assert!(err.contains("any"), "error must list 'any' as valid: {err}");
+    }
+
+    #[test]
+    fn run_verification_rejects_invalid_config_before_running() {
+        let dir = tempdir().unwrap();
+        // Write a parseable but semantically invalid .barzel.toml
+        let toml = r#"
+[project]
+name = "myapp"
+language = "rust"
+
+[layers]
+enabled = ["security"]
+
+[layers.logic]
+property_based = true
+formal_verification = true
+
+[layers.structural]
+mutation_testing = true
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = true
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
+        let result = crate::run::run_verification(
+            Some(dir.path()),
+            None,
+            false, false, true, false, None,
+        );
+        assert!(result.is_err(), "invalid config must cause run_verification to return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("security"), "error must name the bad layer: {msg}");
+        assert!(msg.contains("hostile"), "error must list valid layers: {msg}");
     }
 }

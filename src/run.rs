@@ -76,6 +76,7 @@ pub fn run_verification(
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let workspace = detect_workspace(target_path)?;
     let cfg = BarzelConfig::load_for_project(target_path);
+    cfg.validate()?;
 
     // Resolve diff context when --since is provided.
     // If git lookup fails (not a git repo, bad rev), warn and fall back to full run.
@@ -230,7 +231,9 @@ pub fn run_verification(
                 }
 
                 let member_cfg = if Path::new(&member.root).join(".barzel.toml").exists() {
-                    BarzelConfig::load_for_project(Path::new(&member.root))
+                    let mcfg = BarzelConfig::load_for_project(Path::new(&member.root));
+                    mcfg.validate()?;
+                    mcfg
                 } else {
                     cfg.clone()
                 };
