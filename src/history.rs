@@ -148,13 +148,11 @@ pub fn annotate_metric_regressions(
 
     if report.workspace_members.is_empty() {
         // Single-project path
-        let project_name = report.project.package_name.clone()
-            .unwrap_or_else(|| report.project.language.to_string());
         let language = report.project.language.to_string();
 
         for layer in &mut report.layers {
             let injected = regression_findings_for_layer(
-                layer, &history, &project_name, None, &language, cfg,
+                layer, &history, None, &language, cfg,
             );
             if !injected.is_empty() {
                 layer.findings.extend(injected);
@@ -167,9 +165,6 @@ pub fn annotate_metric_regressions(
     } else {
         // Workspace path: inject into member layers, then update member summary/status,
         // then rebuild aggregate layers so they are consistent before emit.
-        let project_name = report.project.package_name.clone()
-            .unwrap_or_else(|| "workspace".to_string());
-
         for member in &mut report.workspace_members {
             let package_path = member.package_path.clone();
             let language = member.language.clone();
@@ -177,8 +172,7 @@ pub fn annotate_metric_regressions(
 
             for layer in &mut member.layers {
                 let injected = regression_findings_for_layer(
-                    layer, &history, &project_name,
-                    Some(&package_path), &language, cfg,
+                    layer, &history, Some(&package_path), &language, cfg,
                 );
                 if !injected.is_empty() {
                     layer.findings.extend(injected);
@@ -235,10 +229,11 @@ pub fn annotate_metric_regressions(
 
 /// Return all regression findings for `layer` (one per exceeded metric threshold).
 /// Returns an empty vec when no regressions are found.
+/// Matching key: `(package_path, language, runner)` — `project` is metadata only and
+/// is excluded so package-name renames do not break the baseline.
 fn regression_findings_for_layer(
     layer: &LayerResult,
     history: &[HistoryEntry],
-    project: &str,
     package_path: Option<&str>,
     language: &str,
     cfg: &HistoryConfig,
@@ -247,18 +242,16 @@ fn regression_findings_for_layer(
     let cov = layer.metrics.coverage;
     if ms.is_none() && cov.is_none() { return vec![]; }
 
-    // Collect matching prior layers (history is sorted ascending) and take the last
-    // (most recent). Collecting first avoids the DoubleEndedIterator lint on flat_map chains.
-    let prior_layers: Vec<_> = history.iter()
+    // History is sorted ascending; scan in reverse so the first match is the most recent.
+    // Matching key: (package_path, language, runner) — project name is metadata only
+    // and is intentionally excluded so renames do not break the baseline.
+    let prior_layer = match history.iter().rev()
         .filter(|e| {
-            e.project == project
-                && e.package_path.as_deref() == package_path
+            e.package_path.as_deref() == package_path
                 && e.language == language
         })
-        .flat_map(|e| &e.layers)
-        .filter(|l| l.runner == layer.runner)
-        .collect();
-    let prior_layer = match prior_layers.last() {
+        .find_map(|e| e.layers.iter().find(|l| l.runner == layer.runner))
+    {
         Some(p) => p,
         None => return vec![],
     };
@@ -826,6 +819,54 @@ mod tests {
             duration_ms: 0,
         });
         report
+    }
+
+    #[test]
+    fn project_name_change_does_not_break_baseline() {
+        // Matching key is (package_path, language, runner); project is metadata only.
+        // A prior entry with project="old-name" must still match a current run
+        // whose package_name changed to "new-name".
+        let dir = tempdir().unwrap();
+        let prior = HistoryEntry {
+            report_id: "oldname01".to_string(),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(1),
+            project: "old-name".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "pytest".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: None,
+                coverage: Some(0.90),
+            }],
+        };
+        save_entry(&prior, dir.path()).unwrap();
+
+        let mut new_project = project(Language::Python);
+        new_project.package_name = Some("new-name".to_string());
+        let mut report = BarzelReport::new(new_project);
+        report.add_layer(LayerResult {
+            name: "logic".to_string(),
+            runner: "pytest".to_string(),
+            status: LayerStatus::Pass,
+            findings: vec![Finding {
+                severity: Severity::Info,
+                code: "PASS".to_string(),
+                message: "ok".to_string(),
+                location: None,
+                reproduce_cmd: Some("pytest".to_string()),
+                suggestion: None,
+            }],
+            metrics: LayerMetrics { coverage: Some(0.75), ..Default::default() },
+            duration_ms: 0,
+        });
+
+        annotate_metric_regressions(&mut report, dir.path(), &default_history_cfg());
+
+        assert!(report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "project name change must not prevent regression detection — key is (package_path, language, runner)");
     }
 
     #[test]
