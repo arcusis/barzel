@@ -119,12 +119,70 @@ pub fn save_entry(entry: &HistoryEntry, project_root: &Path) -> std::io::Result<
     std::fs::write(history_dir.join(filename), content)
 }
 
-/// Persist all metric-bearing entries from a report.
-/// Best-effort: a failure is returned as `Err` so the caller can warn on stderr.
-pub fn save_from_report(report: &BarzelReport, project_root: &Path) -> std::io::Result<()> {
-    for entry in entries_from_report(report) {
+/// Persist all metric-bearing entries from a report, then prune old entries.
+/// Best-effort: failures are returned as `Err` so the caller can warn on stderr.
+pub fn save_from_report(
+    report: &BarzelReport,
+    project_root: &Path,
+    cfg: &crate::config::HistoryConfig,
+) -> std::io::Result<()> {
+    let entries = entries_from_report(report);
+    let saved_any = !entries.is_empty();
+    for entry in entries {
         save_entry(&entry, project_root)?;
     }
+    // Only prune when this run actually wrote entries — a skipped/no-metrics run
+    // should not be the event that unexpectedly deletes prior history.
+    if saved_any {
+        prune_history(project_root, cfg.max_entries_per_package)?;
+    }
+    Ok(())
+}
+
+/// Remove old history entries so each `(package_path, language)` group retains
+/// at most `max_entries` files. Entries are sorted by timestamp ascending;
+/// the oldest are deleted first. Files that cannot be parsed are skipped and
+/// left in place rather than deleted.
+/// `max_entries = 0` is a no-op (keep all entries).
+pub fn prune_history(project_root: &Path, max_entries: usize) -> std::io::Result<()> {
+    if max_entries == 0 { return Ok(()); }
+    let history_dir = project_root.join(".barzel").join("history");
+    if !history_dir.exists() { return Ok(()); }
+
+    // Read all valid entries paired with their file path.
+    let mut entries_with_paths: Vec<(HistoryEntry, std::path::PathBuf)> = std::fs::read_dir(&history_dir)?
+        .flatten()
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .filter_map(|e| {
+            let path = e.path();
+            let content = std::fs::read_to_string(&path).ok()?;
+            let entry: HistoryEntry = serde_json::from_str(&content).ok()?;
+            Some((entry, path))
+        })
+        .collect();
+
+    // Sort ascending by timestamp so oldest are first.
+    entries_with_paths.sort_by_key(|(e, _)| e.timestamp);
+
+    // Group by (package_path, language) and delete the oldest beyond the limit.
+    use std::collections::HashMap;
+    let mut groups: HashMap<(Option<String>, String), Vec<std::path::PathBuf>> = HashMap::new();
+    for (entry, path) in entries_with_paths {
+        groups
+            .entry((entry.package_path, entry.language))
+            .or_default()
+            .push(path);
+    }
+
+    for paths in groups.values() {
+        // paths is already sorted oldest-first; delete everything before the window.
+        if paths.len() > max_entries {
+            for path in &paths[..paths.len() - max_entries] {
+                std::fs::remove_file(path)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -621,7 +679,7 @@ mod tests {
     fn workspace_entries_get_unique_filenames() {
         let dir = tempdir().unwrap();
         let report = workspace_report();
-        save_from_report(&report, dir.path()).unwrap();
+        save_from_report(&report, dir.path(), &HistoryConfig::default()).unwrap();
 
         let history_dir = dir.path().join(".barzel").join("history");
         let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
@@ -767,6 +825,178 @@ mod tests {
         assert!(result.is_err(), "save_entry must return Err when history dir cannot be created");
     }
 
+    // ── prune_history ─────────────────────────────────────────────────────────
+
+    fn make_history_entry(package_path: Option<&str>, language: &str, hours_ago: i64) -> HistoryEntry {
+        HistoryEntry {
+            report_id: format!("id-{}-{}", package_path.unwrap_or("single"), hours_ago),
+            timestamp: chrono::Utc::now() - chrono::Duration::hours(hours_ago),
+            project: "proj".to_string(),
+            package_path: package_path.map(str::to_string),
+            language: language.to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![HistoryLayerMetric {
+                runner: "pytest".to_string(),
+                status: LayerStatus::Pass,
+                mutation_score: None,
+                coverage: Some(0.90),
+            }],
+        }
+    }
+
+    #[test]
+    fn prune_keeps_newest_entries_within_limit() {
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        // Write 5 entries for the same (package_path=None, language=python) group
+        for hours_ago in [5, 4, 3, 2, 1] {
+            let e = make_history_entry(None, "python", hours_ago);
+            std::fs::write(
+                history_dir.join(format!("entry-{hours_ago}.json")),
+                serde_json::to_string(&e).unwrap(),
+            ).unwrap();
+        }
+
+        prune_history(dir.path(), 3).unwrap();
+
+        let remaining = load_history_entries(dir.path());
+        assert_eq!(remaining.len(), 3, "only the 3 newest entries must remain");
+        // Newest 3 are hours_ago = 1, 2, 3 (smallest = most recent)
+        let hours: Vec<i64> = remaining.iter().map(|e| {
+            let now = chrono::Utc::now();
+            let delta = now - e.timestamp;
+            (delta.num_minutes() as f64 / 60.0).round() as i64
+        }).collect();
+        assert!(hours.iter().all(|&h| h <= 3), "only entries from the last 3 hours must remain");
+    }
+
+    #[test]
+    fn prune_isolates_packages_in_workspace() {
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        // pkg-a: 3 entries; pkg-b: 3 entries. Limit = 2.
+        // After pruning each group independently, 2 from each remain (4 total).
+        for hours_ago in [3, 2, 1] {
+            let a = make_history_entry(Some("crates/api"), "rust", hours_ago);
+            let b = make_history_entry(Some("apps/web"), "typescript", hours_ago);
+            std::fs::write(history_dir.join(format!("a-{hours_ago}.json")), serde_json::to_string(&a).unwrap()).unwrap();
+            std::fs::write(history_dir.join(format!("b-{hours_ago}.json")), serde_json::to_string(&b).unwrap()).unwrap();
+        }
+
+        prune_history(dir.path(), 2).unwrap();
+
+        let remaining = load_history_entries(dir.path());
+        assert_eq!(remaining.len(), 4, "2 entries per package, 2 packages = 4 total");
+
+        let api_count = remaining.iter().filter(|e| e.package_path.as_deref() == Some("crates/api")).count();
+        let web_count = remaining.iter().filter(|e| e.package_path.as_deref() == Some("apps/web")).count();
+        assert_eq!(api_count, 2, "crates/api must retain 2 entries");
+        assert_eq!(web_count, 2, "apps/web must retain 2 entries");
+    }
+
+    #[test]
+    fn prune_zero_max_entries_keeps_everything() {
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        for hours_ago in [3, 2, 1] {
+            let e = make_history_entry(None, "python", hours_ago);
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
+        }
+
+        // prune_history(0) is a no-op inside the function itself — nothing deleted.
+        prune_history(dir.path(), 0).unwrap();
+        assert_eq!(load_history_entries(dir.path()).len(), 3,
+            "prune_history with max_entries=0 must be a no-op");
+
+        // save_from_report with max_entries=0 also must not prune.
+        let cfg = HistoryConfig { max_entries_per_package: 0, ..HistoryConfig::default() };
+        let report = single_report_with_coverage();
+        save_from_report(&report, dir.path(), &cfg).unwrap();
+        let remaining = load_history_entries(dir.path());
+        assert_eq!(remaining.len(), 4, "3 old + 1 new; no pruning with max_entries=0");
+    }
+
+    #[test]
+    fn prune_ignores_invalid_json_files() {
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        // Write 2 valid entries and 1 corrupt file
+        for hours_ago in [2, 1] {
+            let e = make_history_entry(None, "python", hours_ago);
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
+        }
+        std::fs::write(history_dir.join("corrupt.json"), b"not json").unwrap();
+
+        // limit=1: should delete the older valid entry, leave newest + corrupt intact
+        prune_history(dir.path(), 1).unwrap();
+
+        let remaining_files: Vec<_> = std::fs::read_dir(&history_dir).unwrap()
+            .flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(remaining_files.contains(&"corrupt.json".to_string()),
+            "invalid JSON files must not be deleted during pruning");
+        assert_eq!(remaining_files.len(), 2,
+            "corrupt + 1 newest valid entry must remain");
+    }
+
+    #[test]
+    fn save_from_report_prunes_after_save() {
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        // Pre-populate with max_entries entries (all older)
+        let max = 3_usize;
+        for hours_ago in [5, 4, 3] {
+            let e = make_history_entry(None, "python", hours_ago);
+            std::fs::write(history_dir.join(format!("old-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
+        }
+
+        // Now save a new report — should add 1 and then prune back to max
+        let cfg = HistoryConfig { max_entries_per_package: max, ..HistoryConfig::default() };
+        let report = single_report_with_coverage();
+        save_from_report(&report, dir.path(), &cfg).unwrap();
+
+        let remaining = load_history_entries(dir.path());
+        assert_eq!(remaining.len(), max,
+            "after save + prune, exactly max_entries entries must remain");
+        // The newest must be the one we just saved (smallest hours_ago)
+        assert!(remaining.last().map(|e| {
+            let now = chrono::Utc::now();
+            (now - e.timestamp).num_seconds() < 5
+        }).unwrap_or(false), "the newest entry must be the one just saved");
+    }
+
+    #[test]
+    fn no_metrics_report_does_not_trigger_pruning() {
+        // A skipped/diff/no-metrics run must not prune existing history entries.
+        let dir = tempdir().unwrap();
+        let history_dir = dir.path().join(".barzel").join("history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+
+        // Pre-populate 3 entries
+        for hours_ago in [3, 2, 1] {
+            let e = make_history_entry(None, "rust", hours_ago);
+            std::fs::write(history_dir.join(format!("e-{hours_ago}.json")), serde_json::to_string(&e).unwrap()).unwrap();
+        }
+
+        // A no-metrics (semgrep-only) report: save_from_report must write nothing and not prune.
+        let cfg = HistoryConfig { max_entries_per_package: 1, ..HistoryConfig::default() };
+        let report = single_report_no_metrics();
+        save_from_report(&report, dir.path(), &cfg).unwrap();
+
+        // 3 entries must remain untouched — pruning only triggers when at least one was saved
+        assert_eq!(load_history_entries(dir.path()).len(), 3,
+            "no-metrics report must not trigger pruning of existing history entries");
+    }
+
     // ── annotate_metric_regressions ───────────────────────────────────────────
 
     fn default_history_cfg() -> HistoryConfig {
@@ -836,6 +1066,7 @@ mod tests {
             enabled: true,
             coverage_regression_tolerance: -0.05,
             mutation_regression_tolerance: 0.0,
+            ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
         assert!(!report.layers.iter().flat_map(|l| &l.findings)
@@ -856,6 +1087,7 @@ mod tests {
             enabled: true,
             coverage_regression_tolerance: 1.5,
             mutation_regression_tolerance: 0.0,
+            ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
         assert!(!report.layers.iter().flat_map(|l| &l.findings)
@@ -883,6 +1115,7 @@ mod tests {
             enabled: true,
             coverage_regression_tolerance: exact_drop, // set tolerance == drop exactly
             mutation_regression_tolerance: 0.0,
+            ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
         assert!(!report.layers.iter().flat_map(|l| &l.findings)
@@ -1021,6 +1254,7 @@ mod tests {
             enabled: true,
             coverage_regression_tolerance: 0.02,
             mutation_regression_tolerance: 0.0,
+            ..HistoryConfig::default()
         };
         annotate_metric_regressions(&mut report, dir.path(), &cfg);
         assert!(!report.layers.iter()
