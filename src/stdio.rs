@@ -335,17 +335,17 @@ pub(crate) fn handle_stdio() -> ExitCode {
             match crate::init::run_init(Some(target), true, req.force) {
                 Ok(outcome) => {
                     use crate::init::InitOutcome;
-                    let config_status = match outcome {
-                        InitOutcome::Created    => "created",
-                        InitOutcome::Skipped    => "skipped",
-                        InitOutcome::Overwritten => "overwritten",
+                    let (config_status, message) = match outcome {
+                        InitOutcome::Created     => ("created",    "project initialized"),
+                        InitOutcome::Skipped     => ("skipped",    "config already exists"),
+                        InitOutcome::Overwritten => ("overwritten", "config overwritten"),
                     };
                     let project = crate::detect::detect_project(target).ok();
                     let resp = create_response(
                         "success",
                         request_id,
                         Some(serde_json::json!({
-                            "message": "project initialized",
+                            "message": message,
                             "config_file": ".barzel.toml",
                             "config_status": config_status,
                             "language": project.as_ref().map(|p| p.language.to_string()),
@@ -1219,6 +1219,25 @@ mod tests {
         assert_eq!(outcome, InitOutcome::Overwritten);
         let content = std::fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
         assert!(!content.contains("sentinel"), "force must overwrite sentinel content");
+    }
+
+    #[test]
+    fn init_config_status_and_message_mapping() {
+        use crate::init::InitOutcome;
+        // Verify the (config_status, message) pairs agents rely on
+        for (outcome, expected_status, expected_msg) in [
+            (InitOutcome::Created,     "created",     "project initialized"),
+            (InitOutcome::Skipped,     "skipped",     "config already exists"),
+            (InitOutcome::Overwritten, "overwritten",  "config overwritten"),
+        ] {
+            let (status, msg) = match outcome {
+                InitOutcome::Created     => ("created",    "project initialized"),
+                InitOutcome::Skipped     => ("skipped",    "config already exists"),
+                InitOutcome::Overwritten => ("overwritten", "config overwritten"),
+            };
+            assert_eq!(status, expected_status, "config_status must match for {:?}", expected_status);
+            assert_eq!(msg, expected_msg, "message must match for {:?}", expected_msg);
+        }
     }
 
     // ── tool registry / check payload ─────────────────────────────────────────

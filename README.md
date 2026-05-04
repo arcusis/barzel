@@ -87,6 +87,16 @@ echo '{"command":"history","limit":10,"package_path":"crates/api"}' | barzel --s
 | `language` | string | — | filter history by language |
 | `force` | bool | false | overwrite existing `.barzel.toml` (for `init` command) |
 
+### Init response `data` fields
+
+The `init` success response always includes `config_status`, which agents must check to know whether the config was actually written:
+
+| `config_status` | `message` | Meaning |
+|-----------------|-----------|---------|
+| `"created"` | `"project initialized"` | `.barzel.toml` was written for the first time |
+| `"skipped"` | `"config already exists"` | `.barzel.toml` already existed; no changes made |
+| `"overwritten"` | `"config overwritten"` | `.barzel.toml` was replaced because `force: true` |
+
 ### Response envelope
 
 Every JSON line — progress events and the final response — shares this envelope:
