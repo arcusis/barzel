@@ -5,6 +5,7 @@ use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
 use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::runners::python_venv::venv_tool;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,8 +31,7 @@ impl TestRunner for PipAuditRunner {
     fn is_available(&self, project: &ProjectInfo) -> bool {
         if project.language != crate::detect::Language::Python { return false; }
         let root = Path::new(&project.root);
-        let local = root.join(".venv").join("bin").join("pip-audit");
-        if local.exists() { return true; }
+        if venv_tool(root, "pip-audit").is_some() { return true; }
         self.proc.is_available("pip-audit", &["--version"])
     }
 
@@ -39,12 +39,7 @@ impl TestRunner for PipAuditRunner {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        let local = root.join(".venv").join("bin").join("pip-audit");
-        let cmd = if local.exists() {
-            local.to_string_lossy().to_string()
-        } else {
-            "pip-audit".to_string()
-        };
+        let cmd = venv_tool(root, "pip-audit").unwrap_or_else(|| "pip-audit".to_string());
 
         match self.proc.run(&cmd, &["--format=json", "--progress-spinner=off"], root) {
             Ok(out) => {
@@ -170,6 +165,51 @@ mod tests {
         let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
         let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
+    }
+
+    #[test]
+    fn available_via_windows_scripts_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pip-audit.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+        let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
+        assert!(r.is_available(&info), "pip-audit.exe in .venv/Scripts must make runner available");
+    }
+
+    #[test]
+    fn run_uses_windows_venv_pip_audit_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pip-audit.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+
+        struct CapturingProc;
+        impl SubprocessRunner for CapturingProc {
+            fn run(&self, cmd: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                assert!(cmd.contains("Scripts") && cmd.ends_with("pip-audit.exe"),
+                    "run() must use .venv/Scripts/pip-audit.exe on Windows layout, got: {cmd}");
+                Ok(crate::process::ProcessOutput { stdout: r#"{"dependencies":[]}"#.to_string(), stderr: String::new(), success: true })
+            }
+        }
+        let r = PipAuditRunner { proc: Arc::new(CapturingProc) };
+        r.run(&info).unwrap();
     }
 
     #[test]
