@@ -28,7 +28,8 @@ Language matrix: Rust, TypeScript, Python, Go. `semgrep` runs on all languages. 
 ## Human CLI
 
 ```bash
-barzel init .                          # write .barzel.toml with defaults
+barzel init .                          # write .barzel.toml with defaults (skips if already exists)
+barzel init . --force                  # overwrite existing .barzel.toml
 barzel check                           # show tool availability and required installs
 barzel run                             # run all layers, human output
 barzel run --layer logic,hostile       # run specific layers
@@ -57,6 +58,7 @@ Send a single JSON object to stdin; barzel writes newline-delimited JSON to stdo
 
 ```bash
 echo '{"command":"init","project_path":"."}' | barzel --stdio
+echo '{"command":"init","project_path":".","force":true}' | barzel --stdio
 echo '{"command":"check","project_path":"."}' | barzel --stdio
 echo '{"command":"run"}' | barzel --stdio
 echo '{"command":"run","layers":["logic"],"fail_fast":true}' | barzel --stdio
@@ -83,6 +85,17 @@ echo '{"command":"history","limit":10,"package_path":"crates/api"}' | barzel --s
 | `limit` | int | 20 | max history entries (cap 200, 0 returns empty) |
 | `package_path` | string | — | filter history by workspace member path |
 | `language` | string | — | filter history by language |
+| `force` | bool | false | overwrite existing `.barzel.toml` (for `init` command) |
+
+### Init response `data` fields
+
+The `init` success response always includes `config_status`, which agents must check to know whether the config was actually written:
+
+| `config_status` | `message` | Meaning |
+|-----------------|-----------|---------|
+| `"created"` | `"project initialized"` | `.barzel.toml` was written for the first time |
+| `"skipped"` | `"config already exists"` | `.barzel.toml` already existed; no changes made |
+| `"overwritten"` | `"config overwritten"` | `.barzel.toml` was replaced because `force: true` |
 
 ### Response envelope
 
