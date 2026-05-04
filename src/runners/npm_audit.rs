@@ -69,12 +69,11 @@ impl TestRunner for NpmAuditRunner {
                 let combined = out.combined();
                 let mut findings = parse_npm_audit_json(&combined);
 
-                // Fill reproduce_cmd with the actual package manager and cwd so agents
-                // can run the exact command that triggered the finding.
+                // Unconditionally overwrite reproduce_cmd with the actual package
+                // manager and cwd. Parsed findings carry a default npm-based command;
+                // this corrects it for pnpm/yarn and for workspace-root cwd.
                 for f in &mut findings {
-                    if f.reproduce_cmd.is_none() {
-                        f.reproduce_cmd = Some(audit_reproduce_cmd(cmd, root, &f.code));
-                    }
+                    f.reproduce_cmd = Some(audit_reproduce_cmd(cmd, root, &f.code));
                 }
 
                 let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
@@ -114,7 +113,7 @@ impl TestRunner for NpmAuditRunner {
                     severity: Severity::Critical,
                     code: "NPM_AUDIT_FAILED".to_string(),
                     message: format!("Failed to run {} audit: {}", cmd, e),
-                    reproduce_cmd: Some(format!("cd {} && {} audit --json 2>&1", root.display(), cmd)),
+                    reproduce_cmd: Some(format!("cd {} && {} audit --json 2>&1", shell_quote(root), cmd)),
                     suggestion: Some(format!("Ensure {} is installed and `{} install` has been run.", cmd, cmd)),
                     ..Default::default()
                 }],
@@ -125,20 +124,25 @@ impl TestRunner for NpmAuditRunner {
     }
 }
 
+/// Single-quote a path for POSIX shell. Wraps in single quotes and escapes
+/// any embedded single quotes so paths with spaces are runnable verbatim.
+fn shell_quote(path: &Path) -> String {
+    let s = path.display().to_string();
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Build a reproduce command that names the actual package manager and working directory.
 fn audit_reproduce_cmd(cmd: &str, cwd: &Path, finding_code: &str) -> String {
+    let quoted = shell_quote(cwd);
     // Extract the package name from codes like NPM_VULN_LODASH → lodash
     let pkg = finding_code
         .strip_prefix("NPM_VULN_")
         .map(|s| s.to_lowercase().replace('_', "-"))
         .unwrap_or_default();
     if pkg.is_empty() {
-        format!("cd {} && {} audit --json 2>&1", cwd.display(), cmd)
+        format!("cd {quoted} && {cmd} audit --json 2>&1")
     } else {
-        format!(
-            "cd {} && {} audit --json 2>&1 | jq '.vulnerabilities.\"{}\"'",
-            cwd.display(), cmd, pkg
-        )
+        format!("cd {quoted} && {cmd} audit --json 2>&1 | jq '.vulnerabilities.\"{pkg}\"'")
     }
 }
 
@@ -177,7 +181,8 @@ fn extract_npm_findings(json: &serde_json::Value) -> Option<Vec<Finding>> {
             severity,
             code: format!("NPM_VULN_{}", pkg.to_uppercase().replace('-', "_")),
             message: format!("Vulnerability in `{}` ({})", pkg, severity_str),
-            reproduce_cmd: None,  // filled in by run() with the selected cmd and cwd
+            // Default uses npm; run() overwrites with the selected package manager and cwd.
+            reproduce_cmd: Some(format!("npm audit --json 2>&1 | jq '.vulnerabilities.\"{pkg}\"'")),
             suggestion: Some(if fix_available {
                 "Run `npm audit fix` to auto-fix. Review breaking changes first.".to_string()
             } else {
@@ -392,5 +397,41 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert!(matches!(findings[0].severity, Severity::Medium));
         assert!(findings[0].suggestion.as_ref().unwrap().contains("audit fix"));
+    }
+
+    #[test]
+    fn parser_findings_always_have_reproduce_cmd() {
+        let json = r#"{"vulnerabilities":{"lodash":{"severity":"high","fixAvailable":false},"axios":{"severity":"critical","fixAvailable":true}}}"#;
+        let findings = parse_npm_audit_json(json);
+        assert!(!findings.is_empty());
+        for f in &findings {
+            assert!(f.reproduce_cmd.is_some(), "parser finding '{}' must have reproduce_cmd", f.code);
+        }
+    }
+
+    #[test]
+    fn reproduce_cmd_shell_quotes_path_with_spaces() {
+        let base = tempdir().unwrap();
+        let spaced = base.path().join("my project");
+        std::fs::create_dir_all(&spaced).unwrap();
+        std::fs::write(spaced.join("package-lock.json"), b"{}").unwrap();
+        let json = r#"{"vulnerabilities":{"lodash":{"severity":"high","fixAvailable":false}}}"#;
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let result = r.run(&ts_info(&spaced.to_string_lossy())).unwrap();
+        let rc = result.findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(rc.contains("'"), "path with spaces must be single-quoted in reproduce_cmd, got: {rc}");
+        assert!(!rc.contains("my project "), "unquoted path must not appear in reproduce_cmd");
+    }
+
+    #[test]
+    fn spawn_error_reproduce_cmd_quotes_path_with_spaces() {
+        let base = tempdir().unwrap();
+        let spaced = base.path().join("my workspace");
+        std::fs::create_dir_all(&spaced).unwrap();
+        std::fs::write(spaced.join("yarn.lock"), b"").unwrap();
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::spawn_error("not found")) };
+        let result = r.run(&ts_info(&spaced.to_string_lossy())).unwrap();
+        let rc = result.findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(rc.contains("'"), "spawn-error reproduce_cmd must shell-quote path with spaces, got: {rc}");
     }
 }
