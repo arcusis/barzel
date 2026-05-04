@@ -104,7 +104,9 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     // pnpm workspace: pnpm-workspace.yaml
     if root.join("pnpm-workspace.yaml").exists() {
         let content = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap_or_default();
-        let members = stamp_workspace_root(expand_glob_patterns(&root, &content), &root_str);
+        let patterns_owned = parse_yaml_list_items(&content);
+        let patterns: Vec<&str> = patterns_owned.iter().map(|s| s.as_str()).collect();
+        let members = stamp_workspace_root(expand_js_workspace_patterns(&root, &patterns), &root_str);
         if !members.is_empty() {
             return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Pnpm, members });
         }
@@ -298,23 +300,91 @@ fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)
     members
 }
 
+/// Extract YAML list item values from pnpm-workspace.yaml content.
+/// Returns raw pattern strings (may include `!`-prefixed exclusions).
+fn parse_yaml_list_items(content: &str) -> Vec<String> {
+    content.lines()
+        .filter_map(|line| {
+            let s = line.trim().trim_start_matches('-').trim()
+                .trim_matches('"').trim_matches('\'');
+            if s.is_empty() || s.starts_with('#') || s.ends_with(':') {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        })
+        .collect()
+}
+
+/// True if `exclude_pat` (without leading `!`) matches `rel_path`.
+fn js_glob_excludes(exclude_pat: &str, rel_path: &str) -> bool {
+    if let Some(prefix) = exclude_pat.strip_suffix("/*") {
+        rel_path.starts_with(&format!("{}/", prefix))
+    } else {
+        rel_path == exclude_pat
+    }
+}
+
+/// Expand a list of JS workspace patterns (include and `!`-prefixed exclude) into
+/// workspace members.  Deduplicates via BTreeSet on relative path so that
+/// overlapping patterns like `["packages/*", "packages/api"]` yield one entry.
+fn expand_js_workspace_patterns(root: &Path, patterns: &[&str]) -> Vec<(String, ProjectInfo)> {
+    let mut includes = Vec::new();
+    let mut excludes = Vec::new();
+    for &p in patterns {
+        if let Some(exc) = p.strip_prefix('!') {
+            excludes.push(exc);
+        } else {
+            includes.push(p);
+        }
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut members = Vec::new();
+
+    for pat in includes {
+        if let Some(prefix) = pat.strip_suffix("/*") {
+            let dir = root.join(prefix);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                paths.sort();
+                for path in paths {
+                    if !path.is_dir() { continue; }
+                    let rel = format!("{}/{}", prefix, path.file_name()
+                        .and_then(|n| n.to_str()).unwrap_or(""));
+                    if excludes.iter().any(|ex| js_glob_excludes(ex, &rel)) { continue; }
+                    if seen.insert(rel.clone()) {
+                        if let Ok(info) = detect_project(&path) {
+                            members.push((rel, info));
+                        }
+                    }
+                }
+            }
+        } else {
+            let full = root.join(pat);
+            if full.is_dir() {
+                if excludes.iter().any(|ex| js_glob_excludes(ex, pat)) { continue; }
+                if seen.insert(pat.to_string()) {
+                    if let Ok(info) = detect_project(&full) {
+                        members.push((pat.to_string(), info));
+                    }
+                }
+            }
+        }
+    }
+    members
+}
+
 fn parse_npm_workspace_members(root: &Path, pkg_json: &str) -> Vec<(String, ProjectInfo)> {
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(pkg_json) {
-        let patterns = json.get("workspaces")
+        let raw = json.get("workspaces")
             .and_then(|w| {
                 if let Some(arr) = w.as_array() { Some(arr.clone()) }
                 else { w.get("packages").and_then(|p| p.as_array()).cloned() }
             })
             .unwrap_or_default();
-
-        let mut members = Vec::new();
-        for pat in patterns {
-            if let Some(p) = pat.as_str() {
-                let fake = format!("- {}", p);
-                members.extend(expand_glob_patterns(root, &fake));
-            }
-        }
-        return members;
+        let patterns: Vec<&str> = raw.iter().filter_map(|p| p.as_str()).collect();
+        return expand_js_workspace_patterns(root, &patterns);
     }
     vec![]
 }
@@ -322,14 +392,8 @@ fn parse_npm_workspace_members(root: &Path, pkg_json: &str) -> Vec<(String, Proj
 fn parse_lerna_members(root: &Path, lerna_json: &str) -> Vec<(String, ProjectInfo)> {
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(lerna_json) {
         if let Some(pats) = json.get("packages").and_then(|p| p.as_array()) {
-            let mut members = Vec::new();
-            for pat in pats {
-                if let Some(p) = pat.as_str() {
-                    let fake = format!("- {}", p);
-                    members.extend(expand_glob_patterns(root, &fake));
-                }
-            }
-            return members;
+            let patterns: Vec<&str> = pats.iter().filter_map(|p| p.as_str()).collect();
+            return expand_js_workspace_patterns(root, &patterns);
         }
     }
     vec![]
@@ -1118,6 +1182,101 @@ mod tests {
                 let (_, info) = root_member.unwrap();
                 assert!(info.workspace_root.is_some(),
                     "root member must have workspace_root stamped");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    // ── JS workspace exclusion / dedup ────────────────────────────────────────
+
+    #[test]
+    fn pnpm_workspace_exclude_removes_matching_member() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - 'packages/*'\n  - '!packages/experimental'\n").unwrap();
+        let keep = dir.path().join("packages/core");
+        let exclude = dir.path().join("packages/experimental");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&exclude).unwrap();
+        fs::write(keep.join("package.json"), br#"{"name":"core"}"#).unwrap();
+        fs::write(exclude.join("package.json"), br#"{"name":"experimental"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/core"), "core must be included");
+                assert!(!paths.contains(&"packages/experimental"), "experimental must be excluded");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn lerna_exclude_removes_matching_member() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lerna.json"),
+            br#"{"packages":["packages/*","!packages/legacy"]}"#).unwrap();
+        let keep = dir.path().join("packages/api");
+        let exclude = dir.path().join("packages/legacy");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&exclude).unwrap();
+        fs::write(keep.join("package.json"), br#"{"name":"api"}"#).unwrap();
+        fs::write(exclude.join("package.json"), br#"{"name":"legacy"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"packages/api"), "api must be included");
+                assert!(!paths.contains(&"packages/legacy"), "legacy must be excluded");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn npm_workspaces_exclude_removes_matching_member() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("package.json"),
+            br#"{"name":"root","workspaces":["apps/*","!apps/legacy"]}"#).unwrap();
+        let keep = dir.path().join("apps/web");
+        let exclude = dir.path().join("apps/legacy");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&exclude).unwrap();
+        fs::write(keep.join("package.json"), br#"{"name":"web"}"#).unwrap();
+        fs::write(exclude.join("package.json"), br#"{"name":"legacy"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let paths: Vec<&str> = members.iter().map(|(p, _)| p.as_str()).collect();
+                assert!(paths.contains(&"apps/web"), "web must be included");
+                assert!(!paths.contains(&"apps/legacy"), "legacy must be excluded");
+            }
+            _ => panic!("Expected Multi"),
+        }
+    }
+
+    #[test]
+    fn js_workspace_deduplicates_overlapping_patterns() {
+        let dir = tempdir().unwrap();
+        // "packages/*" expands packages/api; "packages/api" names it again explicitly.
+        fs::write(dir.path().join("package.json"),
+            br#"{"name":"root","workspaces":["packages/*","packages/api"]}"#).unwrap();
+        let api = dir.path().join("packages/api");
+        let other = dir.path().join("packages/utils");
+        fs::create_dir_all(&api).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(api.join("package.json"), br#"{"name":"api"}"#).unwrap();
+        fs::write(other.join("package.json"), br#"{"name":"utils"}"#).unwrap();
+
+        let ws = detect_workspace(dir.path()).unwrap();
+        match ws {
+            WorkspaceInfo::Multi { members, .. } => {
+                let api_count = members.iter().filter(|(p, _)| p == "packages/api").count();
+                assert_eq!(api_count, 1, "packages/api must appear exactly once despite two matching patterns");
+                assert_eq!(members.len(), 2, "total members must be 2 (api + utils)");
             }
             _ => panic!("Expected Multi"),
         }
