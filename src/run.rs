@@ -32,6 +32,34 @@ use owo_colors::OwoColorize;
 use std::path::Path;
 use std::time::Duration;
 
+/// The set of layer names accepted by `--layer` / stdio `layers`.
+const VALID_LAYERS: &[&str] = &["logic", "structural", "hostile", "operational"];
+
+/// Validate an explicitly requested layer list.
+/// Returns `Err` if the list is empty or contains any unrecognised name.
+fn validate_requested_layers(layers: &[String]) -> Result<()> {
+    if layers.is_empty() {
+        return Err(crate::error::BarzelError::Detection(format!(
+            "layers must not be empty; valid layers: {}",
+            VALID_LAYERS.join(", ")
+        )));
+    }
+    let bad: Vec<&str> = layers
+        .iter()
+        .filter(|l| !VALID_LAYERS.contains(&l.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !bad.is_empty() {
+        return Err(crate::error::BarzelError::Detection(format!(
+            "unknown layer{}: {}; valid layers: {}",
+            if bad.len() == 1 { "" } else { "s" },
+            bad.join(", "),
+            VALID_LAYERS.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 pub fn run_verification(
     target: Option<&Path>,
     layers: Option<Vec<String>>,
@@ -41,6 +69,10 @@ pub fn run_verification(
     json_out: bool,
     since: Option<&str>,
 ) -> Result<BarzelReport> {
+    if let Some(ref requested) = layers {
+        validate_requested_layers(requested)?;
+    }
+
     let target_path = target.unwrap_or_else(|| Path::new("."));
     let workspace = detect_workspace(target_path)?;
     let cfg = BarzelConfig::load_for_project(target_path);
@@ -935,5 +967,73 @@ mod tests {
         let active = select_active_members(&members, &ctx);
         assert_eq!(active.len(), 1,
             "a deletion inside a member must still mark that member as affected");
+    }
+
+    // ── validate_requested_layers ─────────────────────────────────────────────
+
+    fn strs(v: &[&str]) -> Vec<String> { v.iter().map(|s| s.to_string()).collect() }
+
+    #[test]
+    fn valid_single_layer_accepted() {
+        for layer in VALID_LAYERS {
+            validate_requested_layers(&strs(&[layer])).unwrap_or_else(|e| {
+                panic!("valid layer '{layer}' was rejected: {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn valid_multiple_layers_accepted() {
+        validate_requested_layers(&strs(&["logic", "hostile"])).unwrap();
+        validate_requested_layers(&strs(&["logic", "structural", "hostile", "operational"])).unwrap();
+    }
+
+    #[test]
+    fn empty_layers_rejected() {
+        let err = validate_requested_layers(&[]).unwrap_err().to_string();
+        assert!(err.contains("not be empty"), "error must mention empty: {err}");
+        assert!(err.contains("logic"), "error must list valid layers: {err}");
+    }
+
+    #[test]
+    fn uppercase_layer_rejected() {
+        let err = validate_requested_layers(&strs(&["Hostile"])).unwrap_err().to_string();
+        assert!(err.contains("Hostile"), "error must name the bad value: {err}");
+        assert!(err.contains("hostile"), "error must show correct spelling: {err}");
+    }
+
+    #[test]
+    fn misspelled_layer_rejected() {
+        let err = validate_requested_layers(&strs(&["security"])).unwrap_err().to_string();
+        assert!(err.contains("security"), "error must name the bad value: {err}");
+        assert!(err.contains("hostile"), "error must list valid layers: {err}");
+    }
+
+    #[test]
+    fn mixed_valid_and_invalid_layers_rejected() {
+        let err = validate_requested_layers(&strs(&["logic", "LOGIC"])).unwrap_err().to_string();
+        assert!(err.contains("LOGIC"), "error must name the bad value: {err}");
+    }
+
+    #[test]
+    fn run_verification_rejects_unknown_layer_before_running() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let result = run_verification(
+            Some(dir.path()),
+            Some(strs(&["security"])),
+            false, false, true, false, None,
+        );
+        assert!(result.is_err(), "unknown layer must cause run_verification to return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unknown layer"), "error must say 'unknown layer': {msg}");
+        assert!(msg.contains("security"), "error must name the bad layer: {msg}");
+        assert!(msg.contains("hostile"), "error must list valid layers: {msg}");
+    }
+
+    #[test]
+    fn operational_layer_still_accepted() {
+        // Regression: existing tests that pass Some(vec!["operational"]) must not break
+        validate_requested_layers(&strs(&["operational"])).unwrap();
     }
 }
