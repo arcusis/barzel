@@ -28,7 +28,7 @@ pub enum Commands {
         #[arg(long)]
         path: Option<PathBuf>,
 
-        /// Specific layers to run (logic, structural, hostile)
+        /// Specific layers to run (logic, structural, hostile, operational)
         #[arg(long, value_delimiter = ',')]
         layer: Option<Vec<String>>,
 
