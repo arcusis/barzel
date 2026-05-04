@@ -15,23 +15,33 @@ pub struct PipAuditRunner {
 
 impl Default for PipAuditRunner {
     fn default() -> Self {
-        Self { proc: Arc::new(OsProcessRunner) }
+        Self {
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl TestRunner for PipAuditRunner {
-    fn name(&self) -> &'static str { "pip-audit" }
-    fn layer(&self) -> Layer { Layer::Hostile }
+    fn name(&self) -> &'static str {
+        "pip-audit"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Hostile
+    }
 
     fn skip_message(&self) -> &'static str {
         "pip-audit not installed — run `pip install pip-audit` to scan Python dependencies for CVEs"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Python { return false; }
+        if project.language != crate::detect::Language::Python {
+            return false;
+        }
         let root = Path::new(&project.root);
         let local = root.join(".venv").join("bin").join("pip-audit");
-        if local.exists() { return true; }
+        if local.exists() {
+            return true;
+        }
         self.proc.is_available("pip-audit", &["--version"])
     }
 
@@ -46,14 +56,23 @@ impl TestRunner for PipAuditRunner {
             "pip-audit".to_string()
         };
 
-        match self.proc.run(&cmd, &["--format=json", "--progress-spinner=off"], root) {
+        match self
+            .proc
+            .run(&cmd, &["--format=json", "--progress-spinner=off"], root)
+        {
             Ok(out) => {
                 let combined = out.combined();
                 let findings = parse_pip_audit_json(&combined);
 
-                let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
+                let status = if findings
+                    .iter()
+                    .any(|f| matches!(f.severity, Severity::Critical | Severity::High))
+                {
                     LayerStatus::Fail
-                } else if findings.iter().any(|f| matches!(f.severity, Severity::Medium)) {
+                } else if findings
+                    .iter()
+                    .any(|f| matches!(f.severity, Severity::Medium))
+                {
                     LayerStatus::Partial
                 } else {
                     LayerStatus::Pass
@@ -64,7 +83,9 @@ impl TestRunner for PipAuditRunner {
                         severity: Severity::Info,
                         code: "PIP_AUDIT_PASSED".to_string(),
                         message: "No known vulnerabilities in Python dependencies".to_string(),
-                        suggestion: Some("Keep dependencies updated: `pip list --outdated`".to_string()),
+                        suggestion: Some(
+                            "Keep dependencies updated: `pip list --outdated`".to_string(),
+                        ),
                         ..Default::default()
                     }]
                 } else {
@@ -89,10 +110,15 @@ impl TestRunner for PipAuditRunner {
                     code: "PIP_AUDIT_FAILED".to_string(),
                     message: format!("Failed to run pip-audit: {}", e),
                     reproduce_cmd: Some(format!("{cmd} --format=json 2>&1")),
-                    suggestion: Some("Install: `pip install pip-audit` or `uv add --dev pip-audit`".to_string()),
+                    suggestion: Some(
+                        "Install: `pip install pip-audit` or `uv add --dev pip-audit`".to_string(),
+                    ),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -104,7 +130,9 @@ pub fn parse_pip_audit_json(output: &str) -> Vec<Finding> {
     for line in output.lines() {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(line.trim()) {
             if let Some(findings) = extract_pip_findings(&json) {
-                if !findings.is_empty() { return findings; }
+                if !findings.is_empty() {
+                    return findings;
+                }
             }
         }
     }
@@ -156,32 +184,56 @@ mod tests {
     use crate::process::MockProcessRunner;
 
     fn py_info() -> ProjectInfo {
-        ProjectInfo { language: Language::Python, root: "/tmp".to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
+        ProjectInfo {
+            language: Language::Python,
+            root: "/tmp".to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        }
     }
 
     #[test]
-    fn name_is_pip_audit() { assert_eq!(PipAuditRunner::default().name(), "pip-audit"); }
+    fn name_is_pip_audit() {
+        assert_eq!(PipAuditRunner::default().name(), "pip-audit");
+    }
 
     #[test]
-    fn layer_is_hostile() { assert!(matches!(PipAuditRunner::default().layer(), Layer::Hostile)); }
+    fn layer_is_hostile() {
+        assert!(matches!(PipAuditRunner::default().layer(), Layer::Hostile));
+    }
 
     #[test]
     fn not_available_for_rust() {
-        let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = PipAuditRunner {
+            proc: Arc::new(MockProcessRunner::passing("")),
+        };
+        let i = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(!r.is_available(&i));
     }
 
     #[test]
     fn available_when_pip_audit_installed() {
-        let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::passing("pip-audit 2.4.0")) };
+        let r = PipAuditRunner {
+            proc: Arc::new(MockProcessRunner::passing("pip-audit 2.4.0")),
+        };
         assert!(r.is_available(&py_info()));
     }
 
     #[test]
     fn clean_project_returns_pass() {
         let json = r#"{"dependencies":[]}"#;
-        let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let r = PipAuditRunner {
+            proc: Arc::new(MockProcessRunner::passing(json)),
+        };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.iter().any(|f| f.code == "PIP_AUDIT_PASSED"));
@@ -190,11 +242,17 @@ mod tests {
     #[test]
     fn vulnerability_found_returns_fail() {
         let json = r#"{"dependencies":[{"name":"requests","version":"2.25.0","vulns":[{"id":"PYSEC-2023-74","fix_versions":["2.31.0"],"description":"Unverified HTTPS requests"}]}]}"#;
-        let r = PipAuditRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
+        let r = PipAuditRunner {
+            proc: Arc::new(MockProcessRunner::failing(json)),
+        };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert!(result.findings[0].message.contains("requests"));
-        assert!(result.findings[0].suggestion.as_ref().unwrap().contains("2.31.0"));
+        assert!(result.findings[0]
+            .suggestion
+            .as_ref()
+            .unwrap()
+            .contains("2.31.0"));
     }
 
     #[test]

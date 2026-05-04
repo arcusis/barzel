@@ -32,7 +32,9 @@ pub struct MockHttpClient {
 #[cfg(test)]
 impl MockHttpClient {
     pub fn new(responses: Vec<Result<u16, String>>) -> Self {
-        Self { responses: std::sync::Mutex::new(responses.into()) }
+        Self {
+            responses: std::sync::Mutex::new(responses.into()),
+        }
     }
 
     pub fn always_ok(status: u16) -> Self {
@@ -48,7 +50,10 @@ impl MockHttpClient {
 #[cfg(test)]
 impl HttpClient for MockHttpClient {
     fn get(&self, _url: &str, _timeout_ms: u64) -> Result<u16, String> {
-        self.responses.lock().unwrap().pop_front()
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
             .expect("MockHttpClient: more calls than configured responses")
     }
 }

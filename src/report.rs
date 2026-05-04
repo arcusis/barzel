@@ -40,7 +40,9 @@ pub struct WorkspaceMemberReport {
     pub summary: Summary,
 }
 
-fn default_fail_on() -> String { "high".to_string() }
+fn default_fail_on() -> String {
+    "high".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerResult {
@@ -214,7 +216,11 @@ impl BarzelReport {
         std::fs::create_dir_all(&reports_dir)?;
 
         let id_prefix = self.id.get(..8).unwrap_or(&self.id);
-        let filename = format!("report-{}-{}.json", self.timestamp.format("%Y%m%d-%H%M%S"), id_prefix);
+        let filename = format!(
+            "report-{}-{}.json",
+            self.timestamp.format("%Y%m%d-%H%M%S"),
+            id_prefix
+        );
         let path = reports_dir.join(filename);
 
         let content = serde_json::to_string_pretty(self)?;
@@ -239,7 +245,9 @@ impl BarzelReport {
 
         for entry in std::fs::read_dir(&reports_dir)?.flatten() {
             let path = entry.path();
-            if !path.extension().map(|x| x == "json").unwrap_or(false) { continue; }
+            if !path.extension().map(|x| x == "json").unwrap_or(false) {
+                continue;
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(report) = serde_json::from_str::<Self>(&content) {
                     let is_newer = best.as_ref().is_none_or(|(prev, prev_path)| {
@@ -401,7 +409,7 @@ mod tests {
         let mut report = BarzelReport::new(dummy_project());
         report.add_layer(layer_with_findings(vec![finding(Severity::Low)]));
         assert_eq!(report.status, ReportStatus::Pass);
-        assert_eq!(report.summary.low, 1);  // catches low += 1 → *= 1 mutation
+        assert_eq!(report.summary.low, 1); // catches low += 1 → *= 1 mutation
     }
 
     #[test]
@@ -530,10 +538,17 @@ mod tests {
         r2.timestamp = r1.timestamp; // same second, different IDs
         let p1 = r1.save(dir.path()).unwrap();
         let p2 = r2.save(dir.path()).unwrap();
-        assert_ne!(p1, p2, "two reports with the same timestamp must not share a filename");
+        assert_ne!(
+            p1, p2,
+            "two reports with the same timestamp must not share a filename"
+        );
         // Both are loadable by ID
-        assert!(BarzelReport::load_by_id(dir.path(), &r1.id).unwrap().is_some());
-        assert!(BarzelReport::load_by_id(dir.path(), &r2.id).unwrap().is_some());
+        assert!(BarzelReport::load_by_id(dir.path(), &r1.id)
+            .unwrap()
+            .is_some());
+        assert!(BarzelReport::load_by_id(dir.path(), &r2.id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

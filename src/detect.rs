@@ -94,9 +94,13 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
     if root.join("Cargo.toml").exists() {
         let content = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
         if content.contains("[workspace]") {
-            let members = stamp_workspace_root(parse_cargo_workspace_members(&root, &content), &root_str);
+            let members =
+                stamp_workspace_root(parse_cargo_workspace_members(&root, &content), &root_str);
             if !members.is_empty() {
-                return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Cargo, members });
+                return Ok(WorkspaceInfo::Multi {
+                    kind: WorkspaceKind::Cargo,
+                    members,
+                });
             }
         }
     }
@@ -106,7 +110,10 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         let content = std::fs::read_to_string(root.join("pnpm-workspace.yaml")).unwrap_or_default();
         let members = stamp_workspace_root(expand_glob_patterns(&root, &content), &root_str);
         if !members.is_empty() {
-            return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Pnpm, members });
+            return Ok(WorkspaceInfo::Multi {
+                kind: WorkspaceKind::Pnpm,
+                members,
+            });
         }
     }
 
@@ -116,7 +123,11 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         if pkg.contains("\"workspaces\"") {
             let members = stamp_workspace_root(parse_npm_workspace_members(&root, &pkg), &root_str);
             if !members.is_empty() {
-                let kind = if root.join("turbo.json").exists() { WorkspaceKind::Turbo } else { WorkspaceKind::Npm };
+                let kind = if root.join("turbo.json").exists() {
+                    WorkspaceKind::Turbo
+                } else {
+                    WorkspaceKind::Npm
+                };
                 return Ok(WorkspaceInfo::Multi { kind, members });
             }
         }
@@ -127,7 +138,10 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
         let content = std::fs::read_to_string(root.join("lerna.json")).unwrap_or_default();
         let members = stamp_workspace_root(parse_lerna_members(&root, &content), &root_str);
         if !members.is_empty() {
-            return Ok(WorkspaceInfo::Multi { kind: WorkspaceKind::Lerna, members });
+            return Ok(WorkspaceInfo::Multi {
+                kind: WorkspaceKind::Lerna,
+                members,
+            });
         }
     }
 
@@ -135,11 +149,17 @@ pub fn detect_workspace(path: &Path) -> crate::error::Result<WorkspaceInfo> {
 }
 
 /// Set `workspace_root` on every member to the detected workspace root path.
-fn stamp_workspace_root(members: Vec<(String, ProjectInfo)>, root: &str) -> Vec<(String, ProjectInfo)> {
-    members.into_iter().map(|(rel, mut info)| {
-        info.workspace_root = Some(root.to_string());
-        (rel, info)
-    }).collect()
+fn stamp_workspace_root(
+    members: Vec<(String, ProjectInfo)>,
+    root: &str,
+) -> Vec<(String, ProjectInfo)> {
+    members
+        .into_iter()
+        .map(|(rel, mut info)| {
+            info.workspace_root = Some(root.to_string());
+            (rel, info)
+        })
+        .collect()
 }
 
 /// Returns `(relative_path, ProjectInfo)` pairs from Cargo.toml [workspace] members list.
@@ -150,8 +170,12 @@ fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, Pro
 
     for line in content.lines() {
         let t = line.trim();
-        if t.starts_with("members") && t.contains('=') { in_members = true; }
-        if !in_members { continue; }
+        if t.starts_with("members") && t.contains('=') {
+            in_members = true;
+        }
+        if !in_members {
+            continue;
+        }
 
         let mut s = t;
         while let Some(start) = s.find('"') {
@@ -173,9 +197,13 @@ fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, Pro
                     }
                 }
                 s = &s[end + 1..];
-            } else { break; }
+            } else {
+                break;
+            }
         }
-        if t.contains(']') { break; }
+        if t.contains(']') {
+            break;
+        }
     }
     members
 }
@@ -184,8 +212,15 @@ fn parse_cargo_workspace_members(root: &Path, content: &str) -> Vec<(String, Pro
 fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)> {
     let mut members = Vec::new();
     for line in content.lines() {
-        let pat = line.trim().trim_start_matches('-').trim().trim_matches('"').trim_matches('\'');
-        if pat.is_empty() || pat.starts_with('#') { continue; }
+        let pat = line
+            .trim()
+            .trim_start_matches('-')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if pat.is_empty() || pat.starts_with('#') {
+            continue;
+        }
 
         if let Some(prefix) = pat.strip_suffix("/*") {
             let dir = root.join(prefix);
@@ -195,8 +230,11 @@ fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)
                 for path in paths {
                     if path.is_dir() {
                         if let Ok(info) = detect_project(&path) {
-                            let rel = format!("{}/{}", prefix, path.file_name()
-                                .and_then(|n| n.to_str()).unwrap_or(""));
+                            let rel = format!(
+                                "{}/{}",
+                                prefix,
+                                path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+                            );
                             members.push((rel, info));
                         }
                     }
@@ -216,10 +254,14 @@ fn expand_glob_patterns(root: &Path, content: &str) -> Vec<(String, ProjectInfo)
 
 fn parse_npm_workspace_members(root: &Path, pkg_json: &str) -> Vec<(String, ProjectInfo)> {
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(pkg_json) {
-        let patterns = json.get("workspaces")
+        let patterns = json
+            .get("workspaces")
             .and_then(|w| {
-                if let Some(arr) = w.as_array() { Some(arr.clone()) }
-                else { w.get("packages").and_then(|p| p.as_array()).cloned() }
+                if let Some(arr) = w.as_array() {
+                    Some(arr.clone())
+                } else {
+                    w.get("packages").and_then(|p| p.as_array()).cloned()
+                }
             })
             .unwrap_or_default();
 
@@ -301,9 +343,13 @@ pub fn detect_project(path: &Path) -> crate::error::Result<ProjectInfo> {
     }
 
     // Python: pyproject.toml takes priority over requirements.txt
-    if root.join("pyproject.toml").exists() || root.join("setup.py").exists() || root.join("requirements.txt").exists() {
+    if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("requirements.txt").exists()
+    {
         let pkg_content = std::fs::read_to_string(root.join("pyproject.toml")).unwrap_or_default();
-        let req_content = std::fs::read_to_string(root.join("requirements.txt")).unwrap_or_default();
+        let req_content =
+            std::fs::read_to_string(root.join("requirements.txt")).unwrap_or_default();
         let combined = format!("{}\n{}", pkg_content, req_content);
         let package_name = extract_python_package_name(&pkg_content);
         let ai_frameworks = detect_python_ai_frameworks(&combined);
@@ -436,8 +482,15 @@ fn extract_python_package_name(pyproject: &str) -> Option<String> {
         let line = line.trim();
         if line.starts_with("name") && line.contains('=') {
             if let Some(val) = line.split('=').nth(1) {
-                let name = val.trim().trim_matches('"').trim_matches('\'').trim_matches('"').to_string();
-                if !name.is_empty() { return Some(name); }
+                let name = val
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
             }
         }
     }
@@ -453,7 +506,11 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     if let Some(value) = after_colon.strip_prefix('"') {
         let end = value.find('"')?;
         let name = value[..end].to_string();
-        if name.is_empty() { None } else { Some(name) }
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     } else {
         None
     }
@@ -477,7 +534,11 @@ pub fn extract_package_name_from_content(content: &str) -> Option<String> {
         let line = line.trim();
         if line.starts_with("name") {
             if let Some(value) = line.split('=').nth(1) {
-                let name = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                let name = value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
                 if !name.is_empty() {
                     return Some(name);
                 }
@@ -489,12 +550,18 @@ pub fn extract_package_name_from_content(content: &str) -> Option<String> {
 
 /// Walk one level of a directory looking for files ending with `suffix`.
 fn walk_dir_has_suffix(root: &Path, suffix: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(root) else { return false; };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
-        if s.ends_with(suffix) { return true; }
-        if entry.path().is_dir() && walk_dir_has_suffix(&entry.path(), suffix) { return true; }
+        if s.ends_with(suffix) {
+            return true;
+        }
+        if entry.path().is_dir() && walk_dir_has_suffix(&entry.path(), suffix) {
+            return true;
+        }
     }
     false
 }
@@ -522,7 +589,11 @@ mod tests {
     #[test]
     fn detects_rust_project() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test-crate\"").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test-crate\"",
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.language, Language::Rust);
         assert_eq!(info.package_name, Some("test-crate".to_string()));
@@ -561,7 +632,11 @@ mod tests {
     #[test]
     fn detects_nextjs_from_package_json_dep() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("package.json"), r#"{"name":"app","dependencies":{"next":"14.0.0"}}"#).unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"app","dependencies":{"next":"14.0.0"}}"#,
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert!(info.frameworks.is_nextjs);
     }
@@ -570,7 +645,11 @@ mod tests {
     fn typescript_has_tests_with_playwright_config() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("package.json"), b"{}").unwrap();
-        fs::write(dir.path().join("playwright.config.ts"), b"export default {}").unwrap();
+        fs::write(
+            dir.path().join("playwright.config.ts"),
+            b"export default {}",
+        )
+        .unwrap();
         assert!(detect_project(dir.path()).unwrap().has_tests);
     }
 
@@ -579,7 +658,11 @@ mod tests {
     #[test]
     fn detects_python_from_pyproject_toml() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"my-lib\"").unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"my-lib\"",
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.language, Language::Python);
         assert_eq!(info.package_name, Some("my-lib".to_string()));
@@ -606,10 +689,18 @@ mod tests {
     #[test]
     fn detects_openai_in_typescript() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("package.json"), r#"{"dependencies":{"openai":"4.0.0"}}"#).unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies":{"openai":"4.0.0"}}"#,
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert!(info.frameworks.has_ai_deps);
-        assert!(info.frameworks.ai_frameworks.iter().any(|f| f.contains("OpenAI")));
+        assert!(info
+            .frameworks
+            .ai_frameworks
+            .iter()
+            .any(|f| f.contains("OpenAI")));
     }
 
     #[test]
@@ -618,13 +709,21 @@ mod tests {
         fs::write(dir.path().join("requirements.txt"), b"anthropic\nfastapi").unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert!(info.frameworks.has_ai_deps);
-        assert!(info.frameworks.ai_frameworks.iter().any(|f| f.contains("Anthropic")));
+        assert!(info
+            .frameworks
+            .ai_frameworks
+            .iter()
+            .any(|f| f.contains("Anthropic")));
     }
 
     #[test]
     fn detects_langchain_in_python() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("requirements.txt"), b"langchain\nlangchain-openai").unwrap();
+        fs::write(
+            dir.path().join("requirements.txt"),
+            b"langchain\nlangchain-openai",
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert!(info.frameworks.has_ai_deps);
     }
@@ -634,7 +733,11 @@ mod tests {
     #[test]
     fn detects_go_project_with_module_name() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("go.mod"), b"module github.com/user/myproject\ngo 1.21\n").unwrap();
+        fs::write(
+            dir.path().join("go.mod"),
+            b"module github.com/user/myproject\ngo 1.21\n",
+        )
+        .unwrap();
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.language, Language::Go);
         assert_eq!(info.package_name, Some("myproject".to_string()));
@@ -643,7 +746,10 @@ mod tests {
     #[test]
     fn detects_unknown_project() {
         let dir = tempdir().unwrap();
-        assert_eq!(detect_project(dir.path()).unwrap().language, Language::Unknown);
+        assert_eq!(
+            detect_project(dir.path()).unwrap().language,
+            Language::Unknown
+        );
     }
 
     // ── Helper functions ──────────────────────────────────────────────────────
@@ -651,7 +757,9 @@ mod tests {
     #[test]
     fn extracts_package_name_basic() {
         assert_eq!(
-            extract_package_name_from_content("[package]\nname = \"my-crate\"\nversion = \"0.1.0\""),
+            extract_package_name_from_content(
+                "[package]\nname = \"my-crate\"\nversion = \"0.1.0\""
+            ),
             Some("my-crate".to_string())
         );
     }
@@ -672,7 +780,10 @@ mod tests {
     #[test]
     fn extracts_name_when_not_first_field() {
         let json = r#"{"version":"1.0","description":"a lib","name":"real-name"}"#;
-        assert_eq!(extract_json_string_field(json, "name"), Some("real-name".to_string()));
+        assert_eq!(
+            extract_json_string_field(json, "name"),
+            Some("real-name".to_string())
+        );
     }
 
     #[test]
@@ -731,8 +842,11 @@ mod tests {
     #[test]
     fn cargo_workspace_with_members_returns_multi() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"),
-            b"[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        )
+        .unwrap();
         let a = dir.path().join("crates/a");
         let b = dir.path().join("crates/b");
         fs::create_dir_all(&a).unwrap();
@@ -756,7 +870,11 @@ mod tests {
     #[test]
     fn pnpm_workspace_returns_multi() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("pnpm-workspace.yaml"), b"packages:\n  - 'apps/*'\n").unwrap();
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - 'apps/*'\n",
+        )
+        .unwrap();
         let apps = dir.path().join("apps/web");
         fs::create_dir_all(&apps).unwrap();
         fs::write(apps.join("package.json"), br#"{"name":"web"}"#).unwrap();
@@ -776,8 +894,11 @@ mod tests {
     #[test]
     fn npm_workspace_returns_multi() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("package.json"),
-            br#"{"name":"root","workspaces":["packages/*"]}"#).unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            br#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
         let pkg = dir.path().join("packages/ui");
         fs::create_dir_all(&pkg).unwrap();
         fs::write(pkg.join("package.json"), br#"{"name":"ui"}"#).unwrap();
@@ -796,8 +917,11 @@ mod tests {
     #[test]
     fn lerna_workspace_returns_multi() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("lerna.json"),
-            br#"{"packages":["packages/*"]}"#).unwrap();
+        fs::write(
+            dir.path().join("lerna.json"),
+            br#"{"packages":["packages/*"]}"#,
+        )
+        .unwrap();
         let pkg = dir.path().join("packages/core");
         fs::create_dir_all(&pkg).unwrap();
         fs::write(pkg.join("package.json"), br#"{"name":"core"}"#).unwrap();
@@ -816,8 +940,11 @@ mod tests {
     fn empty_workspace_falls_back_to_single() {
         let dir = tempdir().unwrap();
         // Cargo.toml with [workspace] but no member dirs exist
-        fs::write(dir.path().join("Cargo.toml"),
-            b"[workspace]\nmembers = [\"nonexistent\"]\n").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"nonexistent\"]\n",
+        )
+        .unwrap();
         let ws = detect_workspace(dir.path()).unwrap();
         // No members found → Single
         assert!(matches!(ws, WorkspaceInfo::Single(_)));
@@ -826,7 +953,11 @@ mod tests {
     #[test]
     fn workspace_member_language_detected_correctly() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("pnpm-workspace.yaml"), b"packages:\n  - 'apps/*'\n").unwrap();
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - 'apps/*'\n",
+        )
+        .unwrap();
         // Python member
         let py = dir.path().join("apps/api");
         fs::create_dir_all(&py).unwrap();
@@ -845,8 +976,11 @@ mod tests {
     #[test]
     fn cargo_workspace_with_glob_members_returns_multi() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"),
-            b"[workspace]\nmembers = [\"crates/*\"]\n").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
         let a = dir.path().join("crates/alpha");
         let b = dir.path().join("crates/beta");
         fs::create_dir_all(&a).unwrap();
@@ -870,22 +1004,34 @@ mod tests {
     #[test]
     fn turbo_workspace_returns_turbo_kind() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("package.json"),
-            br#"{"workspaces":["apps/*"]}"#).unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            br#"{"workspaces":["apps/*"]}"#,
+        )
+        .unwrap();
         fs::write(dir.path().join("turbo.json"), b"{}").unwrap();
         let apps = dir.path().join("apps/web");
         fs::create_dir_all(&apps).unwrap();
         fs::write(apps.join("package.json"), br#"{"name":"web"}"#).unwrap();
 
         let ws = detect_workspace(dir.path()).unwrap();
-        assert!(matches!(ws, WorkspaceInfo::Multi { kind: WorkspaceKind::Turbo, .. }));
+        assert!(matches!(
+            ws,
+            WorkspaceInfo::Multi {
+                kind: WorkspaceKind::Turbo,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn cargo_workspace_members_have_workspace_root_set() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"),
-            b"[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        )
+        .unwrap();
         let a = dir.path().join("crates/a");
         let b = dir.path().join("crates/b");
         fs::create_dir_all(&a).unwrap();
@@ -897,8 +1043,10 @@ mod tests {
         match ws {
             WorkspaceInfo::Multi { members, .. } => {
                 for (_, info) in &members {
-                    assert!(info.workspace_root.is_some(),
-                        "each Cargo workspace member must have workspace_root set");
+                    assert!(
+                        info.workspace_root.is_some(),
+                        "each Cargo workspace member must have workspace_root set"
+                    );
                     let ws_root = info.workspace_root.as_deref().unwrap();
                     let ws_root_path = std::path::Path::new(ws_root);
                     assert!(ws_root_path.join("Cargo.toml").exists(),
@@ -912,7 +1060,11 @@ mod tests {
     #[test]
     fn pnpm_workspace_members_have_workspace_root_set() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("pnpm-workspace.yaml"), b"packages:\n  - 'apps/*'\n").unwrap();
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            b"packages:\n  - 'apps/*'\n",
+        )
+        .unwrap();
         let app = dir.path().join("apps/web");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("package.json"), br#"{"name":"web"}"#).unwrap();
@@ -934,8 +1086,10 @@ mod tests {
         let ws = detect_workspace(dir.path()).unwrap();
         match ws {
             WorkspaceInfo::Single(info) => {
-                assert!(info.workspace_root.is_none(),
-                    "single-project workspace_root must be None");
+                assert!(
+                    info.workspace_root.is_none(),
+                    "single-project workspace_root must be None"
+                );
             }
             _ => panic!("Expected Single"),
         }

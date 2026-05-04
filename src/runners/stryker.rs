@@ -16,13 +16,19 @@ pub struct StrykerRunner {
 
 impl Default for StrykerRunner {
     fn default() -> Self {
-        Self { mutation_threshold: 95.0, proc: Arc::new(OsProcessRunner) }
+        Self {
+            mutation_threshold: 95.0,
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl StrykerRunner {
     pub fn with_threshold(mutation_threshold: f64) -> Self {
-        Self { mutation_threshold, ..Default::default() }
+        Self {
+            mutation_threshold,
+            ..Default::default()
+        }
     }
 }
 
@@ -187,7 +193,9 @@ fn build_stryker_findings(mutation_score: Option<f64>, threshold: f64, _pm: &str
             code: "LOW_MUTATION_SCORE".to_string(),
             message: format!(
                 "Mutation score is {:.1}% (target ≥{:.0}%) — {:.1}% of mutants survived",
-                score, threshold, 100.0 - score
+                score,
+                threshold,
+                100.0 - score
             ),
             reproduce_cmd: Some("npx stryker run".to_string()),
             suggestion: Some(
@@ -202,7 +210,9 @@ fn build_stryker_findings(mutation_score: Option<f64>, threshold: f64, _pm: &str
             code: "MUTATION_NO_SCORE".to_string(),
             message: "Stryker ran but could not determine mutation score. Check reports/mutation/."
                 .to_string(),
-            reproduce_cmd: Some("npx stryker run && open reports/mutation/mutation.html".to_string()),
+            reproduce_cmd: Some(
+                "npx stryker run && open reports/mutation/mutation.html".to_string(),
+            ),
             suggestion: None,
             ..Default::default()
         }],
@@ -229,7 +239,10 @@ mod tests {
     }
 
     fn runner_with(mock: MockProcessRunner) -> StrykerRunner {
-        StrykerRunner { proc: Arc::new(mock), ..Default::default() }
+        StrykerRunner {
+            proc: Arc::new(mock),
+            ..Default::default()
+        }
     }
 
     // ── runner metadata ───────────────────────────────────────────────────────
@@ -241,7 +254,10 @@ mod tests {
 
     #[test]
     fn layer_is_structural() {
-        assert!(matches!(StrykerRunner::default().layer(), crate::plugin::Layer::Structural));
+        assert!(matches!(
+            StrykerRunner::default().layer(),
+            crate::plugin::Layer::Structural
+        ));
     }
 
     #[test]
@@ -271,8 +287,16 @@ mod tests {
         std::fs::write(
             dir.path().join("package.json"),
             br#"{"devDependencies":{"@stryker-mutator/core":"7.0"}}"#,
-        ).unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
+        )
+        .unwrap();
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(StrykerRunner::default().is_available(&info));
     }
 
@@ -280,7 +304,14 @@ mod tests {
     fn available_when_stryker_config_present() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("stryker.config.mjs"), b"export default {}").unwrap();
-        let info = ProjectInfo { language: Language::TypeScript, root: dir.path().to_string_lossy().to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(StrykerRunner::default().is_available(&info));
     }
 
@@ -289,7 +320,9 @@ mod tests {
     #[test]
     fn run_returns_pass_when_score_meets_threshold() {
         let stdout = "Mutation score: 97.00%";
-        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_project("/tmp")).unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout))
+            .run(&ts_project("/tmp"))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.is_empty());
     }
@@ -297,7 +330,9 @@ mod tests {
     #[test]
     fn run_returns_partial_when_score_below_threshold() {
         let stdout = "Mutation score: 60.00%";
-        let result = runner_with(MockProcessRunner::passing(stdout)).run(&ts_project("/tmp")).unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout))
+            .run(&ts_project("/tmp"))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
         assert_eq!(result.findings[0].severity, Severity::High);
     }
@@ -306,11 +341,22 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "npx not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "npx not found",
+                ))
             }
         }
-        let runner = StrykerRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let runner = StrykerRunner {
+            proc: Arc::new(BrokenProc),
+            ..Default::default()
+        };
         let result = runner.run(&ts_project("/tmp")).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);

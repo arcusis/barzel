@@ -12,19 +12,19 @@ use crate::runners::eslint::EslintRunner;
 use crate::runners::fastcheck::FastCheckRunner;
 use crate::runners::go_mutesting::GoMutestingRunner;
 use crate::runners::gotest::GoTestRunner;
+use crate::runners::health_check::HealthCheckRunner;
 use crate::runners::jest::JestRunner;
 use crate::runners::kani::KaniRunner;
 use crate::runners::mutants::MutantsRunner;
 use crate::runners::mutmut::MutmutRunner;
 use crate::runners::mypy::MypyRunner;
 use crate::runners::npm_audit::NpmAuditRunner;
+use crate::runners::operational_command::OperationalCommandRunner;
 use crate::runners::pip_audit::PipAuditRunner;
 use crate::runners::playwright::PlaywrightRunner;
 use crate::runners::proptest::ProptestRunner;
 use crate::runners::pytest::PytestRunner;
 use crate::runners::semgrep::SemgrepRunner;
-use crate::runners::health_check::HealthCheckRunner;
-use crate::runners::operational_command::OperationalCommandRunner;
 use crate::runners::stryker::StrykerRunner;
 use crate::runners::tsc::TscRunner;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -99,7 +99,8 @@ pub fn run_verification(
                 }
             }
 
-            let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio)?;
+            let mut report =
+                run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio)?;
             report.fail_on = cfg.reporting.fail_on.clone();
             // Record diff metadata whether diff succeeded or fell back
             report.diff_since = since.map(str::to_string);
@@ -162,7 +163,7 @@ pub fn run_verification(
                 has_tests: members.iter().any(|(_, m)| m.has_tests),
                 package_name: Some(format!("{}-workspace", kind)),
                 frameworks: Default::default(),
-            workspace_root: None,
+                workspace_root: None,
             };
             let mut aggregate = BarzelReport::new(workspace_project);
             aggregate.fail_on = cfg.reporting.fail_on.clone();
@@ -203,7 +204,8 @@ pub fn run_verification(
                     cfg.clone()
                 };
 
-                let member_report = run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio)?;
+                let member_report =
+                    run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio)?;
 
                 // Store per-package report for rich stdio output
                 use crate::report::WorkspaceMemberReport;
@@ -263,7 +265,8 @@ fn select_active_members<'a>(
     members: &'a [(String, ProjectInfo)],
     ctx: &DiffContext,
 ) -> Vec<&'a (String, ProjectInfo)> {
-    members.iter()
+    members
+        .iter()
         .filter(|(_, m)| ctx.affects_path(Path::new(&m.root)))
         .collect()
 }
@@ -329,8 +332,24 @@ fn run_project_report(
     let operational_cmd = OperationalCommandRunner::new(cfg.layers.operational.commands.clone());
 
     let mut language_runners: Vec<&dyn crate::plugin::TestRunner> = match project.language {
-        Language::Rust => vec![&proptest, &kani, &mutants, &cargo_fuzz, &cargo_audit, &semgrep],
-        Language::TypeScript => vec![&jest, &tsc, &fastcheck, &stryker, &playwright, &eslint, &npm_audit, &semgrep],
+        Language::Rust => vec![
+            &proptest,
+            &kani,
+            &mutants,
+            &cargo_fuzz,
+            &cargo_audit,
+            &semgrep,
+        ],
+        Language::TypeScript => vec![
+            &jest,
+            &tsc,
+            &fastcheck,
+            &stryker,
+            &playwright,
+            &eslint,
+            &npm_audit,
+            &semgrep,
+        ],
         Language::Python => vec![&pytest, &mypy, &mutmut, &bandit, &pip_audit, &semgrep],
         Language::Go => vec![&gotest, &go_mutesting, &semgrep],
         Language::Unknown => vec![&semgrep],
@@ -361,8 +380,12 @@ fn run_project_report(
         .collect();
 
     let mut orchestrator = VerificationOrchestrator::new(filtered);
-    if no_cache { orchestrator = orchestrator.with_no_cache(); }
-    if fail_fast { orchestrator = orchestrator.with_fail_fast(); }
+    if no_cache {
+        orchestrator = orchestrator.with_no_cache();
+    }
+    if fail_fast {
+        orchestrator = orchestrator.with_fail_fast();
+    }
 
     let mut report = if stdio {
         orchestrator.run(project)?
@@ -370,7 +393,10 @@ fn run_project_report(
         let pb = make_spinner();
         let pb_cb = pb.clone();
         let r = orchestrator.run_with_progress(project, move |runner_name, layer_name| {
-            pb_cb.set_message(format!("  {:<12} [{:<14}]  running...", layer_name, runner_name));
+            pb_cb.set_message(format!(
+                "  {:<12} [{:<14}]  running...",
+                layer_name, runner_name
+            ));
             pb_cb.enable_steady_tick(Duration::from_millis(80));
         })?;
         pb.finish_and_clear();
@@ -393,13 +419,23 @@ fn apply_coverage_threshold(report: &mut BarzelReport, min_coverage: Option<f64>
     let mut any_injected = false;
 
     for layer in &mut report.layers {
-        if layer.name != "logic" { continue; }
+        if layer.name != "logic" {
+            continue;
+        }
         let coverage = match layer.metrics.coverage {
             Some(c) => c,
             None => continue,
         };
-        if coverage >= threshold { continue; }
-        if layer.findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD") { continue; }
+        if coverage >= threshold {
+            continue;
+        }
+        if layer
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE_BELOW_THRESHOLD")
+        {
+            continue;
+        }
 
         let reproduce_cmd = reproduce_cmd_for_runner(&layer.runner);
         layer.findings.push(crate::report::Finding {
@@ -431,14 +467,20 @@ fn apply_coverage_threshold(report: &mut BarzelReport, min_coverage: Option<f64>
 
 fn reproduce_cmd_for_runner(runner: &str) -> String {
     match runner {
-        "pytest"  => "pytest --cov --cov-report=term-missing 2>&1 | tail -20".to_string(),
-        "jest"    => "npx jest --coverage 2>&1 | tail -20".to_string(),
+        "pytest" => "pytest --cov --cov-report=term-missing 2>&1 | tail -20".to_string(),
+        "jest" => "npx jest --coverage 2>&1 | tail -20".to_string(),
         "go-test" => "go test ./... -cover 2>&1 | tail -20".to_string(),
-        _         => format!("{} (with coverage enabled) 2>&1 | tail -20", runner),
+        _ => format!("{} (with coverage enabled) 2>&1 | tail -20", runner),
     }
 }
 
-fn emit_report(report: &BarzelReport, stdio: bool, json_out: bool, target_path: &Path, history_cfg: &crate::config::HistoryConfig) -> Result<()> {
+fn emit_report(
+    report: &BarzelReport,
+    stdio: bool,
+    json_out: bool,
+    target_path: &Path,
+    history_cfg: &crate::config::HistoryConfig,
+) -> Result<()> {
     if json_out {
         println!("{}", serde_json::to_string(report).unwrap_or_default());
         report.save(target_path)?;
@@ -478,7 +520,11 @@ fn print_human_report(report: &BarzelReport) {
     // For workspaces: render per-package grouped output from workspace_members
     if !report.workspace_members.is_empty() {
         for member in &report.workspace_members {
-            println!("  {} {}", "package:".dimmed(), member.package_path.bright_white());
+            println!(
+                "  {} {}",
+                "package:".dimmed(),
+                member.package_path.bright_white()
+            );
             for layer in &member.layers {
                 print_layer_row(layer);
             }
@@ -506,13 +552,23 @@ fn print_layer_row(layer: &crate::report::LayerResult) {
         LayerStatus::Pass => {
             let m = &layer.metrics;
             let mut parts = Vec::new();
-            if m.tests_run > 0 { parts.push(format!("{} tests", m.tests_run)); }
-            if let Some(cov) = m.coverage { parts.push(format!("{cov:.0}% cov")); }
-            if let Some(ms) = Some(m.mutation_score).flatten() { parts.push(format!("{ms:.0}% mut")); }
+            if m.tests_run > 0 {
+                parts.push(format!("{} tests", m.tests_run));
+            }
+            if let Some(cov) = m.coverage {
+                parts.push(format!("{cov:.0}% cov"));
+            }
+            if let Some(ms) = Some(m.mutation_score).flatten() {
+                parts.push(format!("{ms:.0}% mut"));
+            }
             parts.push(format!("{}ms", layer.duration_ms));
             parts.join(" · ")
         }
-        LayerStatus::Skipped => layer.findings.first().map(|f| f.message.clone()).unwrap_or_default(),
+        LayerStatus::Skipped => layer
+            .findings
+            .first()
+            .map(|f| f.message.clone())
+            .unwrap_or_default(),
         LayerStatus::Fail | LayerStatus::Partial => {
             let count = layer.findings.len();
             format!("{} finding{}", count, if count == 1 { "" } else { "s" })
@@ -527,7 +583,11 @@ fn print_layer_row(layer: &crate::report::LayerResult) {
         detail.dimmed()
     );
 
-    for finding in layer.findings.iter().filter(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
+    for finding in layer
+        .findings
+        .iter()
+        .filter(|f| matches!(f.severity, Severity::Critical | Severity::High))
+    {
         println!("    {} {}", "↳".dimmed(), finding.message.dimmed());
         if let Some(cmd) = &finding.reproduce_cmd {
             println!("      {} {}", "run:".dimmed(), cmd.bright_cyan().dimmed());
@@ -556,7 +616,10 @@ mod tests {
             runner: runner.to_string(),
             status,
             findings: vec![],
-            metrics: LayerMetrics { coverage: Some(coverage), ..Default::default() },
+            metrics: LayerMetrics {
+                coverage: Some(coverage),
+                ..Default::default()
+            },
             duration_ms: 0,
         }
     }
@@ -577,7 +640,8 @@ mod tests {
 
     #[test]
     fn no_threshold_leaves_report_unchanged() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 40.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 40.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, None);
         assert!(report.layers[0].findings.is_empty());
         assert!(matches!(report.layers[0].status, LayerStatus::Pass));
@@ -585,29 +649,47 @@ mod tests {
 
     #[test]
     fn coverage_above_threshold_no_finding() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 90.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 90.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(85.0));
-        assert!(!report.layers[0].findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
+        assert!(!report.layers[0]
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
         assert!(matches!(report.layers[0].status, LayerStatus::Pass));
     }
 
     #[test]
     fn coverage_equal_to_threshold_no_finding() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 85.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 85.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(85.0));
-        assert!(!report.layers[0].findings.iter().any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
+        assert!(!report.layers[0]
+            .findings
+            .iter()
+            .any(|f| f.code == "COVERAGE_BELOW_THRESHOLD"));
     }
 
     #[test]
     fn coverage_below_threshold_injects_high_finding() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 72.5, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 72.5, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(85.0));
 
-        let finding = report.layers[0].findings.iter().find(|f| f.code == "COVERAGE_BELOW_THRESHOLD");
-        assert!(finding.is_some(), "expected COVERAGE_BELOW_THRESHOLD finding");
+        let finding = report.layers[0]
+            .findings
+            .iter()
+            .find(|f| f.code == "COVERAGE_BELOW_THRESHOLD");
+        assert!(
+            finding.is_some(),
+            "expected COVERAGE_BELOW_THRESHOLD finding"
+        );
         let f = finding.unwrap();
         assert_eq!(f.severity, Severity::High);
-        assert!(f.reproduce_cmd.is_some(), "finding must include reproduce_cmd");
+        assert!(
+            f.reproduce_cmd.is_some(),
+            "finding must include reproduce_cmd"
+        );
         assert!(f.reproduce_cmd.as_ref().unwrap().contains("pytest"));
         assert!(f.message.contains("72.5"));
         assert!(f.message.contains("85.0"));
@@ -615,14 +697,16 @@ mod tests {
 
     #[test]
     fn coverage_below_threshold_marks_layer_partial() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(80.0));
         assert!(matches!(report.layers[0].status, LayerStatus::Partial));
     }
 
     #[test]
     fn coverage_below_threshold_updates_report_summary() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(80.0));
         assert_eq!(report.summary.high, 1);
         assert_eq!(report.summary.total_findings, 1);
@@ -631,10 +715,13 @@ mod tests {
 
     #[test]
     fn enforcement_is_idempotent() {
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 50.0, LayerStatus::Pass));
         apply_coverage_threshold(&mut report, Some(80.0));
         apply_coverage_threshold(&mut report, Some(80.0));
-        let count = report.layers[0].findings.iter()
+        let count = report.layers[0]
+            .findings
+            .iter()
             .filter(|f| f.code == "COVERAGE_BELOW_THRESHOLD")
             .count();
         assert_eq!(count, 1, "duplicate findings must not be injected");
@@ -656,7 +743,10 @@ mod tests {
             runner: "mutmut".to_string(),
             status: LayerStatus::Pass,
             findings: vec![],
-            metrics: LayerMetrics { coverage: Some(40.0), ..Default::default() },
+            metrics: LayerMetrics {
+                coverage: Some(40.0),
+                ..Default::default()
+            },
             duration_ms: 0,
         });
         apply_coverage_threshold(&mut report, Some(80.0));
@@ -679,7 +769,10 @@ mod tests {
             runner: "pytest".to_string(),
             status: LayerStatus::Pass,
             findings: vec![],
-            metrics: LayerMetrics { coverage: None, ..Default::default() },
+            metrics: LayerMetrics {
+                coverage: None,
+                ..Default::default()
+            },
             duration_ms: 0,
         });
         apply_coverage_threshold(&mut report, Some(80.0));
@@ -689,7 +782,8 @@ mod tests {
     #[test]
     fn failing_layer_status_unchanged_when_below_threshold() {
         // If a layer already Fails (e.g. test failures), stay Fail — don't downgrade to Partial
-        let mut report = make_report_with_layer(logic_layer_with_coverage("pytest", 30.0, LayerStatus::Fail));
+        let mut report =
+            make_report_with_layer(logic_layer_with_coverage("pytest", 30.0, LayerStatus::Fail));
         apply_coverage_threshold(&mut report, Some(80.0));
         assert!(matches!(report.layers[0].status, LayerStatus::Fail));
     }
@@ -721,15 +815,21 @@ mod tests {
         assert!(report.layers.iter().any(|l| l.runner == "diff"));
         let layer = report.layers.iter().find(|l| l.runner == "diff").unwrap();
         assert!(matches!(layer.status, LayerStatus::Skipped));
-        assert!(layer.findings.iter().any(|f| f.code == "NO_CHANGES_SINCE_REV"));
+        assert!(layer
+            .findings
+            .iter()
+            .any(|f| f.code == "NO_CHANGES_SINCE_REV"));
     }
 
     #[test]
     fn skip_report_finding_has_reproduce_cmd() {
         let ctx = diff_ctx_empty();
         let report = skip_report(&project_info(), Some("abc123"), &ctx);
-        let finding = report.layers[0].findings.iter()
-            .find(|f| f.code == "NO_CHANGES_SINCE_REV").unwrap();
+        let finding = report.layers[0]
+            .findings
+            .iter()
+            .find(|f| f.code == "NO_CHANGES_SINCE_REV")
+            .unwrap();
         assert!(finding.reproduce_cmd.is_some());
         assert!(finding.reproduce_cmd.as_ref().unwrap().contains("abc123"));
     }
@@ -758,7 +858,10 @@ mod tests {
             report.summary.total_findings, layer_finding_count,
             "summary.total_findings must match actual finding count in layers"
         );
-        assert_eq!(report.summary.total_findings, 1, "skip report has exactly one Info finding");
+        assert_eq!(
+            report.summary.total_findings, 1,
+            "skip report has exactly one Info finding"
+        );
     }
 
     // ── health check runner registration ─────────────────────────────────────
@@ -780,7 +883,10 @@ mod tests {
         };
 
         let mut cfg = BarzelConfig::default();
-        cfg.layers.operational = OperationalConfig { health_checks: vec![], commands: vec![] };
+        cfg.layers.operational = OperationalConfig {
+            health_checks: vec![],
+            commands: vec![],
+        };
 
         // Filter to Operational layer only so no language runners (Semgrep etc.) are
         // invoked — the test must not depend on external tool availability.
@@ -800,20 +906,48 @@ mod tests {
     use std::process::Command as StdCommand;
 
     fn git_init(dir: &std::path::Path) {
-        StdCommand::new("git").args(["init"]).current_dir(dir).output().unwrap();
-        StdCommand::new("git").args(["config", "user.email", "t@t.com"]).current_dir(dir).output().unwrap();
-        StdCommand::new("git").args(["config", "user.name", "T"]).current_dir(dir).output().unwrap();
+        StdCommand::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
     }
 
     fn git_commit_all(dir: &std::path::Path, msg: &str) {
-        StdCommand::new("git").args(["add", "-A"]).current_dir(dir).output().unwrap();
-        StdCommand::new("git").args(["commit", "-m", msg, "--allow-empty"]).current_dir(dir).output().unwrap();
+        StdCommand::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", msg, "--allow-empty"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
     }
 
     fn head_sha(dir: &std::path::Path) -> String {
         String::from_utf8(
-            StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(dir).output().unwrap().stdout
-        ).unwrap().trim().to_string()
+            StdCommand::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
     }
 
     fn member_info(root: &std::path::Path) -> (String, crate::detect::ProjectInfo) {
@@ -904,13 +1038,22 @@ mod tests {
         let layer = workspace_skip_layer(Some("HEAD~2"), &ctx);
         assert_eq!(layer.runner, "diff");
         assert!(matches!(layer.status, LayerStatus::Skipped));
-        let f = layer.findings.iter().find(|f| f.code == "NO_CHANGES_SINCE_REV")
+        let f = layer
+            .findings
+            .iter()
+            .find(|f| f.code == "NO_CHANGES_SINCE_REV")
             .expect("must have NO_CHANGES_SINCE_REV finding");
         assert!(matches!(f.severity, Severity::Info));
         let rc = f.reproduce_cmd.as_deref().unwrap_or("");
         assert!(!rc.trim().is_empty(), "reproduce_cmd must be non-empty");
-        assert!(rc.contains("HEAD~2"), "reproduce_cmd must reference the since rev");
-        assert!(f.message.contains("HEAD~2"), "message must reference the since rev");
+        assert!(
+            rc.contains("HEAD~2"),
+            "reproduce_cmd must reference the since rev"
+        );
+        assert!(
+            f.message.contains("HEAD~2"),
+            "message must reference the since rev"
+        );
     }
 
     #[test]
@@ -933,7 +1076,10 @@ mod tests {
         let ctx = DiffContext::since(repo.path(), &rev).unwrap();
         let members = vec![member_info(&pkg_a)];
         let active = select_active_members(&members, &ctx);
-        assert_eq!(active.len(), 1,
-            "a deletion inside a member must still mark that member as affected");
+        assert_eq!(
+            active.len(),
+            1,
+            "a deletion inside a member must still mark that member as affected"
+        );
     }
 }

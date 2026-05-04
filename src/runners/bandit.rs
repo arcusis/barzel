@@ -13,23 +13,33 @@ pub struct BanditRunner {
 
 impl Default for BanditRunner {
     fn default() -> Self {
-        Self { proc: Arc::new(OsProcessRunner) }
+        Self {
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl TestRunner for BanditRunner {
-    fn name(&self) -> &'static str { "bandit" }
-    fn layer(&self) -> Layer { Layer::Hostile }
+    fn name(&self) -> &'static str {
+        "bandit"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Hostile
+    }
 
     fn skip_message(&self) -> &'static str {
         "bandit not installed — run `pip install bandit` for Python security analysis (SQLi, shell injection, hardcoded passwords, etc.)"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Python { return false; }
+        if project.language != crate::detect::Language::Python {
+            return false;
+        }
         let root = Path::new(&project.root);
         let local = root.join(".venv").join("bin").join("bandit");
-        if local.exists() { return true; }
+        if local.exists() {
+            return true;
+        }
         self.proc.is_available("bandit", &["--version"])
     }
 
@@ -44,14 +54,23 @@ impl TestRunner for BanditRunner {
             "bandit".to_string()
         };
 
-        match self.proc.run(&bandit_cmd, &["-r", ".", "-f", "json", "-q"], root) {
+        match self
+            .proc
+            .run(&bandit_cmd, &["-r", ".", "-f", "json", "-q"], root)
+        {
             Ok(out) => {
                 let combined = out.combined();
                 let findings = parse_bandit_json(&combined);
 
-                let status = if findings.iter().any(|f| matches!(f.severity, Severity::Critical)) {
+                let status = if findings
+                    .iter()
+                    .any(|f| matches!(f.severity, Severity::Critical))
+                {
                     LayerStatus::Fail
-                } else if findings.iter().any(|f| matches!(f.severity, Severity::High | Severity::Medium)) {
+                } else if findings
+                    .iter()
+                    .any(|f| matches!(f.severity, Severity::High | Severity::Medium))
+                {
                     LayerStatus::Partial
                 } else {
                     LayerStatus::Pass
@@ -91,12 +110,14 @@ impl TestRunner for BanditRunner {
                     message: format!("Failed to run bandit: {}", e),
                     reproduce_cmd: Some(format!("{bandit_cmd} -r . 2>&1")),
                     suggestion: Some(
-                        "Install: `pip install bandit` or `uv add --dev bandit`."
-                            .to_string(),
+                        "Install: `pip install bandit` or `uv add --dev bandit`.".to_string(),
                     ),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -122,25 +143,44 @@ fn parse_bandit_json(output: &str) -> Vec<Finding> {
 }
 
 fn bandit_item_to_finding(item: &serde_json::Value) -> Option<Finding> {
-    let severity_str = item.get("issue_severity").and_then(|s| s.as_str()).unwrap_or("LOW");
+    let severity_str = item
+        .get("issue_severity")
+        .and_then(|s| s.as_str())
+        .unwrap_or("LOW");
     let severity = match severity_str.to_uppercase().as_str() {
         "HIGH" => Severity::High,
         "MEDIUM" => Severity::Medium,
         _ => Severity::Low,
     };
 
-    let code = item.get("test_id").and_then(|c| c.as_str()).unwrap_or("BANDIT").to_string();
-    let message = item.get("issue_text").and_then(|m| m.as_str()).unwrap_or("Security issue").to_string();
+    let code = item
+        .get("test_id")
+        .and_then(|c| c.as_str())
+        .unwrap_or("BANDIT")
+        .to_string();
+    let message = item
+        .get("issue_text")
+        .and_then(|m| m.as_str())
+        .unwrap_or("Security issue")
+        .to_string();
     let filename = item.get("filename").and_then(|f| f.as_str()).unwrap_or("");
-    let line = item.get("line_number").and_then(|l| l.as_u64()).unwrap_or(0);
+    let line = item
+        .get("line_number")
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0);
 
     Some(Finding {
         severity,
         code,
         message,
-        location: if filename.is_empty() { None } else { Some(format!("{}:{}", filename, line)) },
+        location: if filename.is_empty() {
+            None
+        } else {
+            Some(format!("{}:{}", filename, line))
+        },
         reproduce_cmd: Some(format!("bandit -r . 2>&1 | grep -A 5 '{}'", filename)),
-        suggestion: item.get("more_info")
+        suggestion: item
+            .get("more_info")
             .and_then(|m| m.as_str())
             .map(|s| s.to_string()),
     })
@@ -164,28 +204,45 @@ mod tests {
     }
 
     #[test]
-    fn name_is_bandit() { assert_eq!(BanditRunner::default().name(), "bandit"); }
+    fn name_is_bandit() {
+        assert_eq!(BanditRunner::default().name(), "bandit");
+    }
 
     #[test]
-    fn layer_is_hostile() { assert!(matches!(BanditRunner::default().layer(), Layer::Hostile)); }
+    fn layer_is_hostile() {
+        assert!(matches!(BanditRunner::default().layer(), Layer::Hostile));
+    }
 
     #[test]
     fn not_available_for_rust() {
-        let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing("")) };
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = BanditRunner {
+            proc: Arc::new(MockProcessRunner::passing("")),
+        };
+        let i = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(!r.is_available(&i));
     }
 
     #[test]
     fn available_when_bandit_present() {
-        let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing("bandit 1.7.5")) };
+        let r = BanditRunner {
+            proc: Arc::new(MockProcessRunner::passing("bandit 1.7.5")),
+        };
         assert!(r.is_available(&py_info()));
     }
 
     #[test]
     fn clean_project_returns_pass_with_info_finding() {
         let json = r#"{"results": [], "metrics": {}}"#;
-        let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let r = BanditRunner {
+            proc: Arc::new(MockProcessRunner::passing(json)),
+        };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.iter().any(|f| f.code == "BANDIT_PASSED"));
@@ -194,7 +251,9 @@ mod tests {
     #[test]
     fn high_severity_issue_returns_partial() {
         let json = r#"{"results": [{"test_id": "B201", "issue_severity": "HIGH", "issue_confidence": "HIGH", "issue_text": "Use of assert detected.", "filename": "app.py", "line_number": 5}]}"#;
-        let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let r = BanditRunner {
+            proc: Arc::new(MockProcessRunner::passing(json)),
+        };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
         assert_eq!(result.findings[0].severity, Severity::High);
@@ -203,20 +262,36 @@ mod tests {
     #[test]
     fn parses_location_from_result() {
         let json = r#"{"results": [{"test_id": "B105", "issue_severity": "MEDIUM", "issue_text": "Hardcoded password", "filename": "config.py", "line_number": 12}]}"#;
-        let r = BanditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let r = BanditRunner {
+            proc: Arc::new(MockProcessRunner::passing(json)),
+        };
         let result = r.run(&py_info()).unwrap();
-        assert!(result.findings[0].location.as_ref().unwrap().contains("config.py:12"));
+        assert!(result.findings[0]
+            .location
+            .as_ref()
+            .unwrap()
+            .contains("config.py:12"));
     }
 
     #[test]
     fn execution_failure_returns_critical_finding() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not found",
+                ))
             }
         }
-        let r = BanditRunner { proc: Arc::new(BrokenProc) };
+        let r = BanditRunner {
+            proc: Arc::new(BrokenProc),
+        };
         let result = r.run(&py_info()).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);

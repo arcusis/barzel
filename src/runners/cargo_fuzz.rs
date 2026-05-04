@@ -13,7 +13,9 @@ pub struct CargoFuzzRunner {
 
 impl Default for CargoFuzzRunner {
     fn default() -> Self {
-        Self { proc: Arc::new(OsProcessRunner) }
+        Self {
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
@@ -104,7 +106,10 @@ impl TestRunner for CargoFuzzRunner {
                 ),
                 reproduce_cmd: Some(format!(
                     "cargo fuzz run {} -- -max_total_time=60 2>&1",
-                    targets.first().map(String::as_str).unwrap_or("fuzz_target_1")
+                    targets
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("fuzz_target_1")
                 )),
                 suggestion: Some(
                     "Run fuzzing in CI with a time budget: \
@@ -199,11 +204,20 @@ mod tests {
     use tempfile::tempdir;
 
     fn rust_info(root: &str) -> ProjectInfo {
-        ProjectInfo { language: Language::Rust, root: root.to_string(), has_tests: true, package_name: None, frameworks: Default::default(), workspace_root: None }
+        ProjectInfo {
+            language: Language::Rust,
+            root: root.to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        }
     }
 
     fn runner_with(mock: MockProcessRunner) -> CargoFuzzRunner {
-        CargoFuzzRunner { proc: Arc::new(mock) }
+        CargoFuzzRunner {
+            proc: Arc::new(mock),
+        }
     }
 
     // ── runner metadata ───────────────────────────────────────────────────────
@@ -215,7 +229,10 @@ mod tests {
 
     #[test]
     fn layer_is_hostile() {
-        assert!(matches!(CargoFuzzRunner::default().layer(), crate::plugin::Layer::Hostile));
+        assert!(matches!(
+            CargoFuzzRunner::default().layer(),
+            crate::plugin::Layer::Hostile
+        ));
     }
 
     #[test]
@@ -229,7 +246,14 @@ mod tests {
     #[test]
     fn not_available_for_go() {
         let dir = tempdir().unwrap();
-        let info = ProjectInfo { language: Language::Go, root: dir.path().to_string_lossy().to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let info = ProjectInfo {
+            language: Language::Go,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(!CargoFuzzRunner::default().is_available(&info));
     }
 
@@ -279,7 +303,11 @@ mod tests {
     #[test]
     fn run_returns_fail_when_crash_artifacts_exist() {
         let dir = tempdir().unwrap();
-        let crash_dir = dir.path().join("fuzz").join("artifacts").join("fuzz_target_1");
+        let crash_dir = dir
+            .path()
+            .join("fuzz")
+            .join("artifacts")
+            .join("fuzz_target_1");
         std::fs::create_dir_all(&crash_dir).unwrap();
         std::fs::write(crash_dir.join("crash-deadbeef"), b"\x00").unwrap();
 
@@ -369,7 +397,11 @@ mod tests {
     #[test]
     fn finds_crash_files_in_artifacts_dir() {
         let dir = tempdir().unwrap();
-        let crash_dir = dir.path().join("fuzz").join("artifacts").join("fuzz_target_1");
+        let crash_dir = dir
+            .path()
+            .join("fuzz")
+            .join("artifacts")
+            .join("fuzz_target_1");
         std::fs::create_dir_all(&crash_dir).unwrap();
         std::fs::write(crash_dir.join("crash-deadbeef"), b"\x00\x01\x02").unwrap();
         std::fs::write(crash_dir.join(".gitignore"), b"*").unwrap(); // should be ignored

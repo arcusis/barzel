@@ -14,13 +14,19 @@ pub struct GoMutestingRunner {
 
 impl Default for GoMutestingRunner {
     fn default() -> Self {
-        Self { mutation_threshold: 95.0, proc: Arc::new(OsProcessRunner) }
+        Self {
+            mutation_threshold: 95.0,
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl GoMutestingRunner {
     pub fn with_threshold(mutation_threshold: f64) -> Self {
-        Self { mutation_threshold, ..Default::default() }
+        Self {
+            mutation_threshold,
+            ..Default::default()
+        }
     }
 }
 
@@ -45,7 +51,9 @@ impl TestRunner for GoMutestingRunner {
         // go-mutesting prints usage and exits non-zero with no args — check it's on PATH
         // We use is_available which returns true if run() succeeds, but go-mutesting --help
         // exits non-zero. Instead we just check it doesn't return a NotFound IO error.
-        self.proc.run("go-mutesting", &["--help"], Path::new(".")).is_ok()
+        self.proc
+            .run("go-mutesting", &["--help"], Path::new("."))
+            .is_ok()
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
@@ -122,7 +130,11 @@ fn parse_go_mutesting_score(output: &str) -> Option<f64> {
         }
         // Fallback: "PASS: 16/19 (84.21%)"
         if line.contains('%') && (line.contains("PASS") || line.contains("score")) {
-            if let Some(pct_str) = line.split('%').next().and_then(|s| s.split_whitespace().last()) {
+            if let Some(pct_str) = line
+                .split('%')
+                .next()
+                .and_then(|s| s.split_whitespace().last())
+            {
                 if let Ok(score) = pct_str.parse::<f64>() {
                     if score <= 100.0 {
                         return Some(score);
@@ -142,7 +154,9 @@ fn build_findings(mutation_score: Option<f64>, threshold: f64) -> Vec<Finding> {
             code: "LOW_MUTATION_SCORE".to_string(),
             message: format!(
                 "Mutation score is {:.1}% (target ≥{:.0}%) — {:.1}% of mutants survived",
-                score, threshold, 100.0 - score
+                score,
+                threshold,
+                100.0 - score
             ),
             reproduce_cmd: Some("go-mutesting ./... 2>&1 | grep FAIL".to_string()),
             suggestion: Some(
@@ -170,11 +184,21 @@ mod tests {
     use proptest::prelude::*;
 
     fn info(lang: Language) -> ProjectInfo {
-        ProjectInfo { language: lang, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None }
+        ProjectInfo {
+            language: lang,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        }
     }
 
     fn runner_with(mock: MockProcessRunner) -> GoMutestingRunner {
-        GoMutestingRunner { proc: Arc::new(mock), ..Default::default() }
+        GoMutestingRunner {
+            proc: Arc::new(mock),
+            ..Default::default()
+        }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
@@ -186,7 +210,10 @@ mod tests {
 
     #[test]
     fn layer_is_structural() {
-        assert!(matches!(GoMutestingRunner::default().layer(), crate::plugin::Layer::Structural));
+        assert!(matches!(
+            GoMutestingRunner::default().layer(),
+            crate::plugin::Layer::Structural
+        ));
     }
 
     #[test]
@@ -208,7 +235,10 @@ mod tests {
 
     #[test]
     fn available_when_command_runs() {
-        let r = GoMutestingRunner { proc: Arc::new(MockProcessRunner::passing("")), ..Default::default() };
+        let r = GoMutestingRunner {
+            proc: Arc::new(MockProcessRunner::passing("")),
+            ..Default::default()
+        };
         assert!(r.is_available(&info(Language::Go)));
     }
 
@@ -216,11 +246,22 @@ mod tests {
     fn not_available_when_command_errors() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not found",
+                ))
             }
         }
-        let r = GoMutestingRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let r = GoMutestingRunner {
+            proc: Arc::new(BrokenProc),
+            ..Default::default()
+        };
         assert!(!r.is_available(&info(Language::Go)));
     }
 
@@ -229,7 +270,9 @@ mod tests {
     #[test]
     fn run_returns_pass_when_score_meets_threshold() {
         let stdout = "The mutation score is 1.0000 (19 of 19 mutants killed)";
-        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Go)).unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout))
+            .run(&info(Language::Go))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert!(result.findings.is_empty());
     }
@@ -237,7 +280,9 @@ mod tests {
     #[test]
     fn run_returns_partial_when_score_below_threshold() {
         let stdout = "The mutation score is 0.6000 (12 of 20 mutants killed)";
-        let result = runner_with(MockProcessRunner::passing(stdout)).run(&info(Language::Go)).unwrap();
+        let result = runner_with(MockProcessRunner::passing(stdout))
+            .run(&info(Language::Go))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
         assert_eq!(result.findings[0].severity, Severity::High);
     }
@@ -246,11 +291,22 @@ mod tests {
     fn run_returns_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not found",
+                ))
             }
         }
-        let r = GoMutestingRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let r = GoMutestingRunner {
+            proc: Arc::new(BrokenProc),
+            ..Default::default()
+        };
         let result = r.run(&info(Language::Go)).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);

@@ -112,7 +112,11 @@ mod tests {
     #[test]
     fn init_toml_contains_project_name() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"my-crate\"").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            b"[package]\nname=\"my-crate\"",
+        )
+        .unwrap();
         run_init(Some(dir.path()), true).unwrap();
         let content = fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
         assert!(content.contains("my-crate"));

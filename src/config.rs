@@ -33,8 +33,12 @@ pub struct HistoryConfig {
     pub max_entries_per_package: usize,
 }
 
-fn default_true() -> bool { true }
-fn default_max_entries() -> usize { 50 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_entries() -> usize {
+    50
+}
 
 impl Default for HistoryConfig {
     fn default() -> Self {
@@ -56,7 +60,11 @@ impl HistoryConfig {
     /// (0.91 = 91%) and a drop can never exceed 1.0.
     pub fn normalized(&self) -> Self {
         let clamp_tolerance = |v: f64| {
-            if !v.is_finite() { 0.0 } else { v.clamp(0.0, 1.0) }
+            if !v.is_finite() {
+                0.0
+            } else {
+                v.clamp(0.0, 1.0)
+            }
         };
         Self {
             enabled: self.enabled,
@@ -118,7 +126,9 @@ pub struct OperationalCommandConfig {
     pub timeout_ms: u64,
 }
 
-fn default_command_timeout_ms() -> u64 { 30_000 }
+fn default_command_timeout_ms() -> u64 {
+    30_000
+}
 
 /// A single HTTP health-check endpoint to verify during the Operational layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,8 +145,12 @@ pub struct HealthCheckConfig {
     pub timeout_ms: u64,
 }
 
-fn default_expected_status() -> u16 { 200 }
-fn default_timeout_ms() -> u64 { 5000 }
+fn default_expected_status() -> u16 {
+    200
+}
+fn default_timeout_ms() -> u64 {
+    5000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicConfig {
@@ -217,7 +231,10 @@ impl BarzelConfig {
                         cfg.history = cfg.history.normalized();
                         return cfg;
                     }
-                    Err(e) => eprintln!("barzel: warning: .barzel.toml is invalid — using defaults ({})", e),
+                    Err(e) => eprintln!(
+                        "barzel: warning: .barzel.toml is invalid — using defaults ({})",
+                        e
+                    ),
                 }
             }
         }
@@ -265,7 +282,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
         let def = BarzelConfig::default();
-        assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
+        assert_eq!(
+            cfg.layers.structural.mutation_threshold,
+            def.layers.structural.mutation_threshold
+        );
         assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
     }
 
@@ -312,7 +332,10 @@ fail_on = "critical"
         // Returns defaults even when TOML is invalid (warning emitted to stderr — not tested here)
         let def = BarzelConfig::default();
         assert_eq!(cfg.reporting.fail_on, def.reporting.fail_on);
-        assert_eq!(cfg.layers.structural.mutation_threshold, def.layers.structural.mutation_threshold);
+        assert_eq!(
+            cfg.layers.structural.mutation_threshold,
+            def.layers.structural.mutation_threshold
+        );
     }
 
     // ── from_project_info ─────────────────────────────────────────────────────
@@ -416,8 +439,10 @@ fail_on = "high"
     #[test]
     fn no_operational_section_defaults_to_empty_health_checks() {
         let cfg = BarzelConfig::default();
-        assert!(cfg.layers.operational.health_checks.is_empty(),
-            "no configured health_checks must produce an empty vec by default");
+        assert!(
+            cfg.layers.operational.health_checks.is_empty(),
+            "no configured health_checks must produce an empty vec by default"
+        );
     }
 
     #[test]
@@ -449,8 +474,10 @@ fail_on = "high"
 "#;
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        assert!(cfg.layers.operational.health_checks.is_empty(),
-            "existing .barzel.toml without [layers.operational] must load cleanly");
+        assert!(
+            cfg.layers.operational.health_checks.is_empty(),
+            "existing .barzel.toml without [layers.operational] must load cleanly"
+        );
     }
 
     #[test]
@@ -546,8 +573,10 @@ fail_on = "high"
     #[test]
     fn no_commands_section_defaults_to_empty() {
         let cfg = BarzelConfig::default();
-        assert!(cfg.layers.operational.commands.is_empty(),
-            "no configured commands must produce empty vec by default");
+        assert!(
+            cfg.layers.operational.commands.is_empty(),
+            "no configured commands must produce empty vec by default"
+        );
     }
 
     #[test]
@@ -680,8 +709,10 @@ fail_on = "high"
 "#;
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        assert!(cfg.history.enabled,
-            "missing [history] section must fall back to enabled=true default");
+        assert!(
+            cfg.history.enabled,
+            "missing [history] section must fall back to enabled=true default"
+        );
         assert_eq!(cfg.history.coverage_regression_tolerance, 0.0);
     }
 
@@ -735,10 +766,14 @@ mutation_regression_tolerance = 0.05
             ..HistoryConfig::default()
         };
         let n = cfg.normalized();
-        assert_eq!(n.coverage_regression_tolerance, 0.0,
-            "negative coverage tolerance must be clamped to 0.0");
-        assert_eq!(n.mutation_regression_tolerance, 0.0,
-            "negative mutation tolerance must be clamped to 0.0");
+        assert_eq!(
+            n.coverage_regression_tolerance, 0.0,
+            "negative coverage tolerance must be clamped to 0.0"
+        );
+        assert_eq!(
+            n.mutation_regression_tolerance, 0.0,
+            "negative mutation tolerance must be clamped to 0.0"
+        );
     }
 
     #[test]
@@ -750,8 +785,10 @@ mutation_regression_tolerance = 0.05
             ..HistoryConfig::default()
         };
         let n = cfg.normalized();
-        assert_eq!(n.coverage_regression_tolerance, 1.0,
-            "tolerance > 1.0 must be clamped to 1.0 (scores are stored as fractions)");
+        assert_eq!(
+            n.coverage_regression_tolerance, 1.0,
+            "tolerance > 1.0 must be clamped to 1.0 (scores are stored as fractions)"
+        );
         assert_eq!(n.mutation_regression_tolerance, 1.0);
     }
 
@@ -779,7 +816,10 @@ mutation_regression_tolerance = 0.05
 
     #[test]
     fn enabled_flag_preserved_through_normalization() {
-        let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
+        let cfg = HistoryConfig {
+            enabled: false,
+            ..HistoryConfig::default()
+        };
         assert!(!cfg.normalized().enabled);
     }
 
@@ -822,8 +862,10 @@ enabled = true
 "#;
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        assert_eq!(cfg.history.max_entries_per_package, 50,
-            "missing max_entries_per_package must default to 50");
+        assert_eq!(
+            cfg.history.max_entries_per_package, 50,
+            "missing max_entries_per_package must default to 50"
+        );
     }
 
     #[test]
@@ -834,13 +876,19 @@ enabled = true
             mutation_regression_tolerance: 0.0,
             max_entries_per_package: 0,
         };
-        assert_eq!(cfg.normalized().max_entries_per_package, 0,
-            "max_entries=0 (no pruning) must survive normalization unchanged");
+        assert_eq!(
+            cfg.normalized().max_entries_per_package,
+            0,
+            "max_entries=0 (no pruning) must survive normalization unchanged"
+        );
     }
 
     #[test]
     fn max_entries_preserved_through_normalization() {
-        let cfg = HistoryConfig { max_entries_per_package: 10, ..HistoryConfig::default() };
+        let cfg = HistoryConfig {
+            max_entries_per_package: 10,
+            ..HistoryConfig::default()
+        };
         assert_eq!(cfg.normalized().max_entries_per_package, 10);
     }
 
@@ -878,10 +926,14 @@ mutation_regression_tolerance = 2.0
 "#;
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        assert_eq!(cfg.history.coverage_regression_tolerance, 0.0,
-            "negative tolerance in .barzel.toml must be clamped to 0.0 on load");
-        assert_eq!(cfg.history.mutation_regression_tolerance, 1.0,
-            "tolerance > 1.0 in .barzel.toml must be clamped to 1.0 on load");
+        assert_eq!(
+            cfg.history.coverage_regression_tolerance, 0.0,
+            "negative tolerance in .barzel.toml must be clamped to 0.0 on load"
+        );
+        assert_eq!(
+            cfg.history.mutation_regression_tolerance, 1.0,
+            "tolerance > 1.0 in .barzel.toml must be clamped to 1.0 on load"
+        );
     }
 
     #[test]
@@ -893,8 +945,14 @@ mutation_regression_tolerance = 2.0
             ..HistoryConfig::default()
         };
         let n = cfg.normalized();
-        assert_eq!(n.coverage_regression_tolerance, 0.0, "NaN tolerance must become 0.0");
-        assert_eq!(n.mutation_regression_tolerance, 0.0, "Inf tolerance must become 0.0");
+        assert_eq!(
+            n.coverage_regression_tolerance, 0.0,
+            "NaN tolerance must become 0.0"
+        );
+        assert_eq!(
+            n.mutation_regression_tolerance, 0.0,
+            "Inf tolerance must become 0.0"
+        );
     }
 
     #[test]
@@ -929,6 +987,9 @@ enabled = false
 "#;
         std::fs::write(dir.path().join(".barzel.toml"), toml).unwrap();
         let cfg = BarzelConfig::load_for_project(dir.path());
-        assert!(!cfg.history.enabled, "history.enabled = false must parse correctly");
+        assert!(
+            !cfg.history.enabled,
+            "history.enabled = false must parse correctly"
+        );
     }
 }

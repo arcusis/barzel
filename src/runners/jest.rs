@@ -13,7 +13,9 @@ pub struct JestRunner {
 
 impl Default for JestRunner {
     fn default() -> Self {
-        Self { proc: Arc::new(OsProcessRunner) }
+        Self {
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
@@ -36,8 +38,12 @@ pub fn detect_js_test_command(root: &Path) -> Option<String> {
 }
 
 impl TestRunner for JestRunner {
-    fn name(&self) -> &'static str { "jest" }
-    fn layer(&self) -> Layer { Layer::Logic }
+    fn name(&self) -> &'static str {
+        "jest"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Logic
+    }
 
     fn skip_message(&self) -> &'static str {
         "No jest/vitest found — add jest or vitest to devDependencies and define a test script in package.json"
@@ -77,7 +83,11 @@ impl TestRunner for JestRunner {
             Ok(out) => {
                 let combined = out.combined();
                 let (passed, failed, total) = parse_js_test_output(&combined);
-                let status = if out.success { LayerStatus::Pass } else { LayerStatus::Fail };
+                let status = if out.success {
+                    LayerStatus::Pass
+                } else {
+                    LayerStatus::Fail
+                };
 
                 let findings = if out.success {
                     vec![]
@@ -134,7 +144,10 @@ impl TestRunner for JestRunner {
                     ),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -152,7 +165,9 @@ pub fn parse_js_test_output(output: &str) -> (u64, u64, u64) {
             let passed = count_before_label(l, " passed");
             let failed = count_before_label(l, " failed");
             let total = count_before_label(l, " total");
-            if total > 0 { return (passed, failed, total); }
+            if total > 0 {
+                return (passed, failed, total);
+            }
         }
 
         // Vitest format: "Tests  X passed (Y)"
@@ -164,7 +179,11 @@ pub fn parse_js_test_output(output: &str) -> (u64, u64, u64) {
 
         // Jest summary: "X tests passed"
         if l.contains(" tests passed") || l.contains(" test passed") {
-            let n = l.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let n = l
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
             return (n, 0, n);
         }
     }
@@ -195,7 +214,9 @@ fn extract_js_failures(output: &str) -> Vec<String> {
         // vitest: "FAIL src/..."  or "× test name"
         if t.starts_with("× ") || t.starts_with("✗ ") {
             let name = t.trim_start_matches(['×', '✗', ' ']).trim();
-            if !name.is_empty() { failures.push(name.to_string()); }
+            if !name.is_empty() {
+                failures.push(name.to_string());
+            }
         }
     }
     failures.truncate(3);
@@ -216,41 +237,67 @@ mod tests {
             root: root.to_string(),
             has_tests: true,
             package_name: Some("my-app".to_string()),
-            frameworks: ProjectFrameworks { is_nextjs: true, ..Default::default() },
+            frameworks: ProjectFrameworks {
+                is_nextjs: true,
+                ..Default::default()
+            },
             workspace_root: None,
         }
     }
 
     fn runner_with(mock: MockProcessRunner) -> JestRunner {
-        JestRunner { proc: Arc::new(mock) }
+        JestRunner {
+            proc: Arc::new(mock),
+        }
     }
 
     fn setup_jest_dir() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"),
-            br#"{"devDependencies":{"jest":"^29"}}"#).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"devDependencies":{"jest":"^29"}}"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
-        std::fs::write(dir.path().join("node_modules/.bin/jest"), b"#!/bin/sh\necho hi").unwrap();
+        std::fs::write(
+            dir.path().join("node_modules/.bin/jest"),
+            b"#!/bin/sh\necho hi",
+        )
+        .unwrap();
         dir
     }
 
     #[test]
-    fn name_is_jest() { assert_eq!(JestRunner::default().name(), "jest"); }
+    fn name_is_jest() {
+        assert_eq!(JestRunner::default().name(), "jest");
+    }
 
     #[test]
-    fn layer_is_logic() { assert!(matches!(JestRunner::default().layer(), Layer::Logic)); }
+    fn layer_is_logic() {
+        assert!(matches!(JestRunner::default().layer(), Layer::Logic));
+    }
 
     #[test]
     fn not_available_for_rust() {
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let i = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(!JestRunner::default().is_available(&i));
     }
 
     #[test]
     fn available_when_jest_in_node_modules() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"),
-            br#"{"scripts":{"test":"jest"},"devDependencies":{"jest":"^29"}}"#).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"scripts":{"test":"jest"},"devDependencies":{"jest":"^29"}}"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
         std::fs::write(dir.path().join("node_modules/.bin/jest"), b"").unwrap();
         let i = ts_info(&dir.path().to_string_lossy());
@@ -260,8 +307,11 @@ mod tests {
     #[test]
     fn available_when_vitest_in_node_modules() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"),
-            br#"{"scripts":{"test":"vitest"},"devDependencies":{"vitest":"^1"}}"#).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"scripts":{"test":"vitest"},"devDependencies":{"vitest":"^1"}}"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
         std::fs::write(dir.path().join("node_modules/.bin/vitest"), b"").unwrap();
         let i = ts_info(&dir.path().to_string_lossy());
@@ -271,8 +321,11 @@ mod tests {
     #[test]
     fn not_available_without_node_modules() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"),
-            br#"{"scripts":{"test":"jest"},"devDependencies":{"jest":"^29"}}"#).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"scripts":{"test":"jest"},"devDependencies":{"jest":"^29"}}"#,
+        )
+        .unwrap();
         // no node_modules/.bin/jest
         let i = ts_info(&dir.path().to_string_lossy());
         assert!(!JestRunner::default().is_available(&i));
@@ -282,7 +335,9 @@ mod tests {
     fn run_pass_parses_jest_counts() {
         let dir = setup_jest_dir();
         let out = "Tests: 12 passed, 0 failed, 12 total\nTest Suites: 3 passed";
-        let result = runner_with(MockProcessRunner::passing(out)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        let result = runner_with(MockProcessRunner::passing(out))
+            .run(&ts_info(&dir.path().to_string_lossy()))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.passed, 12);
         assert_eq!(result.metrics.failed, 0);
@@ -293,7 +348,9 @@ mod tests {
     fn run_fail_parses_counts_and_failure_names() {
         let dir = setup_jest_dir();
         let out = "● MyComponent › renders correctly\nTests: 10 passed, 2 failed, 12 total";
-        let result = runner_with(MockProcessRunner::failing(out)).run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        let result = runner_with(MockProcessRunner::failing(out))
+            .run(&ts_info(&dir.path().to_string_lossy()))
+            .unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.metrics.failed, 2);
         assert!(result.findings[0].message.contains("2"));
@@ -304,11 +361,23 @@ mod tests {
         let dir = setup_jest_dir();
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "node not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "node not found",
+                ))
             }
         }
-        let result = JestRunner { proc: Arc::new(BrokenProc) }.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
+        let result = JestRunner {
+            proc: Arc::new(BrokenProc),
+        }
+        .run(&ts_info(&dir.path().to_string_lossy()))
+        .unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.findings[0].severity, Severity::Critical);
     }
@@ -316,19 +385,24 @@ mod tests {
     #[test]
     fn parse_jest_passed_and_failed() {
         let (p, f, t) = parse_js_test_output("Tests: 10 passed, 2 failed, 12 total");
-        assert_eq!(p, 10); assert_eq!(f, 2); assert_eq!(t, 12);
+        assert_eq!(p, 10);
+        assert_eq!(f, 2);
+        assert_eq!(t, 12);
     }
 
     #[test]
     fn parse_jest_passed_only() {
         let (p, f, t) = parse_js_test_output("Tests: 5 passed, 5 total");
-        assert_eq!(p, 5); assert_eq!(f, 0); assert_eq!(t, 5);
+        assert_eq!(p, 5);
+        assert_eq!(f, 0);
+        assert_eq!(t, 5);
     }
 
     #[test]
     fn parse_vitest_output() {
         let (p, f, _) = parse_js_test_output("Tests  12 passed (12)");
-        assert_eq!(p, 12); assert_eq!(f, 0);
+        assert_eq!(p, 12);
+        assert_eq!(f, 0);
     }
 
     proptest! {

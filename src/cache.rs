@@ -99,7 +99,10 @@ fn hash_shallow(dir: &Path, depth: u8, max_depth: u8, hasher: &mut DefaultHasher
             continue;
         }
         // Skip common build/output directories
-        if matches!(name, "target" | "node_modules" | "dist" | "build" | "__pycache__") {
+        if matches!(
+            name,
+            "target" | "node_modules" | "dist" | "build" | "__pycache__"
+        ) {
             continue;
         }
         if path.is_dir() {
@@ -128,11 +131,7 @@ fn hash_dir_recursive(dir: &Path, hasher: &mut DefaultHasher) {
         return;
     };
 
-    let mut paths: Vec<_> = entries
-        .by_ref()
-        .flatten()
-        .map(|e| e.path())
-        .collect();
+    let mut paths: Vec<_> = entries.by_ref().flatten().map(|e| e.path()).collect();
     paths.sort();
 
     for path in paths {
@@ -187,7 +186,13 @@ fn cache_path(project_root: &Path, language: Language, runner_name: &str) -> std
 
 fn sanitize(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -310,8 +315,14 @@ mod tests {
         let dir = tempdir().unwrap();
         save_runner_hash(dir.path(), Language::Rust, "runner-a", 111);
         save_runner_hash(dir.path(), Language::Rust, "runner-b", 222);
-        assert_eq!(load_runner_hash(dir.path(), Language::Rust, "runner-a"), Some(111));
-        assert_eq!(load_runner_hash(dir.path(), Language::Rust, "runner-b"), Some(222));
+        assert_eq!(
+            load_runner_hash(dir.path(), Language::Rust, "runner-a"),
+            Some(111)
+        );
+        assert_eq!(
+            load_runner_hash(dir.path(), Language::Rust, "runner-b"),
+            Some(222)
+        );
     }
 
     #[test]
@@ -319,8 +330,14 @@ mod tests {
         let dir = tempdir().unwrap();
         save_runner_hash(dir.path(), Language::Rust, "runner", 111);
         save_runner_hash(dir.path(), Language::TypeScript, "runner", 222);
-        assert_eq!(load_runner_hash(dir.path(), Language::Rust, "runner"), Some(111));
-        assert_eq!(load_runner_hash(dir.path(), Language::TypeScript, "runner"), Some(222));
+        assert_eq!(
+            load_runner_hash(dir.path(), Language::Rust, "runner"),
+            Some(111)
+        );
+        assert_eq!(
+            load_runner_hash(dir.path(), Language::TypeScript, "runner"),
+            Some(222)
+        );
     }
 
     // ── is_cached ────────────────────────────────────────────────────────────

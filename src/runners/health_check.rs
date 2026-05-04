@@ -14,7 +14,10 @@ pub struct HealthCheckRunner {
 
 impl HealthCheckRunner {
     pub fn new(checks: Vec<HealthCheckConfig>) -> Self {
-        Self { checks, client: Arc::new(UreqClient) }
+        Self {
+            checks,
+            client: Arc::new(UreqClient),
+        }
     }
 }
 
@@ -26,8 +29,12 @@ fn shell_quote(s: &str) -> String {
 }
 
 impl TestRunner for HealthCheckRunner {
-    fn name(&self) -> &'static str { "health-check" }
-    fn layer(&self) -> Layer { Layer::Operational }
+    fn name(&self) -> &'static str {
+        "health-check"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Operational
+    }
 
     fn skip_message(&self) -> &'static str {
         "no health_checks configured — add [[layers.operational.health_checks]] to .barzel.toml"
@@ -47,7 +54,8 @@ impl TestRunner for HealthCheckRunner {
             let timeout_secs = check.timeout_ms as f64 / 1000.0;
             let reproduce_cmd = format!(
                 "curl -i --max-time {:.1} {} 2>&1 | head -40",
-                timeout_secs, shell_quote(&check.url)
+                timeout_secs,
+                shell_quote(&check.url)
             );
 
             match self.client.get(&check.url, check.timeout_ms) {
@@ -144,7 +152,10 @@ mod tests {
     }
 
     fn runner_with(checks: Vec<HealthCheckConfig>, client: MockHttpClient) -> HealthCheckRunner {
-        HealthCheckRunner { checks, client: Arc::new(client) }
+        HealthCheckRunner {
+            checks,
+            client: Arc::new(client),
+        }
     }
 
     // ── metadata ──────────────────────────────────────────────────────────────
@@ -156,7 +167,10 @@ mod tests {
 
     #[test]
     fn layer_is_operational() {
-        assert!(matches!(HealthCheckRunner::new(vec![]).layer(), Layer::Operational));
+        assert!(matches!(
+            HealthCheckRunner::new(vec![]).layer(),
+            Layer::Operational
+        ));
     }
 
     #[test]
@@ -166,7 +180,10 @@ mod tests {
 
     #[test]
     fn available_when_checks_configured() {
-        assert!(HealthCheckRunner::new(vec![check("api", "http://localhost:3000/health")]).is_available(&project()));
+        assert!(
+            HealthCheckRunner::new(vec![check("api", "http://localhost:3000/health")])
+                .is_available(&project())
+        );
     }
 
     // ── pass ──────────────────────────────────────────────────────────────────
@@ -226,7 +243,10 @@ mod tests {
         let cmd = result.findings[0].reproduce_cmd.as_deref().unwrap();
         assert!(cmd.contains("curl"), "reproduce_cmd must use curl");
         assert!(cmd.contains("localhost:3000"));
-        assert!(cmd.contains("2>&1 | head -40"), "reproduce_cmd must include output capture");
+        assert!(
+            cmd.contains("2>&1 | head -40"),
+            "reproduce_cmd must include output capture"
+        );
     }
 
     #[test]
@@ -245,25 +265,36 @@ mod tests {
     #[test]
     fn url_with_query_string_is_shell_quoted_in_reproduce_cmd() {
         let r = runner_with(
-            vec![check("api", "http://localhost:3000/health?ready=true&source=barzel")],
+            vec![check(
+                "api",
+                "http://localhost:3000/health?ready=true&source=barzel",
+            )],
             MockHttpClient::always_ok(503),
         );
         let result = r.run(&project()).unwrap();
         let cmd = result.findings[0].reproduce_cmd.as_deref().unwrap();
         // URL must be wrapped in single quotes so ? and & are not interpreted by shell
-        assert!(cmd.contains("'http://localhost:3000/health?ready=true&source=barzel'"),
-            "URL with query string must be single-quoted in reproduce_cmd");
+        assert!(
+            cmd.contains("'http://localhost:3000/health?ready=true&source=barzel'"),
+            "URL with query string must be single-quoted in reproduce_cmd"
+        );
     }
 
     #[test]
     fn shell_quote_wraps_url_in_single_quotes() {
-        assert_eq!(shell_quote("http://localhost:3000/health"), "'http://localhost:3000/health'");
+        assert_eq!(
+            shell_quote("http://localhost:3000/health"),
+            "'http://localhost:3000/health'"
+        );
     }
 
     #[test]
     fn shell_quote_handles_query_string_metacharacters() {
         let quoted = shell_quote("http://localhost:3000/health?ready=true&source=barzel");
-        assert_eq!(quoted, "'http://localhost:3000/health?ready=true&source=barzel'");
+        assert_eq!(
+            quoted,
+            "'http://localhost:3000/health?ready=true&source=barzel'"
+        );
     }
 
     // ── client error ──────────────────────────────────────────────────────────

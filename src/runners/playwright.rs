@@ -13,21 +13,26 @@ pub struct PlaywrightRunner {
 
 impl Default for PlaywrightRunner {
     fn default() -> Self {
-        Self { proc: Arc::new(OsProcessRunner) }
+        Self {
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl TestRunner for PlaywrightRunner {
-    fn name(&self) -> &'static str { "playwright" }
-    fn layer(&self) -> Layer { Layer::Operational }
+    fn name(&self) -> &'static str {
+        "playwright"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Operational
+    }
 
     fn skip_message(&self) -> &'static str {
         "playwright not found — run `npx playwright install` and add `@playwright/test` to dev-dependencies"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if !project.frameworks.is_nextjs
-            && project.language != crate::detect::Language::TypeScript
+        if !project.frameworks.is_nextjs && project.language != crate::detect::Language::TypeScript
         {
             return false;
         }
@@ -113,7 +118,10 @@ pub fn parse_playwright_output(output: &str) -> (u64, u64) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(line.trim()) {
             if let Some(stats) = json.get("stats") {
                 let passed = stats.get("expected").and_then(|v| v.as_u64()).unwrap_or(0);
-                let failed = stats.get("unexpected").and_then(|v| v.as_u64()).unwrap_or(0);
+                let failed = stats
+                    .get("unexpected")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 return (passed, failed);
             }
         }
@@ -122,7 +130,11 @@ pub fn parse_playwright_output(output: &str) -> (u64, u64) {
     for line in output.lines().rev() {
         let l = line.trim();
         if l.contains(" passed") {
-            let passed = l.split_whitespace().next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let passed = l
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
             let failed = extract_playwright_failed(l);
             return (passed, failed);
         }
@@ -163,10 +175,17 @@ mod tests {
     }
 
     #[test]
-    fn name_is_playwright() { assert_eq!(PlaywrightRunner::default().name(), "playwright"); }
+    fn name_is_playwright() {
+        assert_eq!(PlaywrightRunner::default().name(), "playwright");
+    }
 
     #[test]
-    fn layer_is_operational() { assert!(matches!(PlaywrightRunner::default().layer(), Layer::Operational)); }
+    fn layer_is_operational() {
+        assert!(matches!(
+            PlaywrightRunner::default().layer(),
+            Layer::Operational
+        ));
+    }
 
     #[test]
     fn not_available_without_config_file() {
@@ -178,7 +197,11 @@ mod tests {
     #[test]
     fn available_with_ts_config() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("playwright.config.ts"), b"export default {};").unwrap();
+        std::fs::write(
+            dir.path().join("playwright.config.ts"),
+            b"export default {};",
+        )
+        .unwrap();
         let info = nextjs_info(&dir.path().to_string_lossy());
         assert!(PlaywrightRunner::default().is_available(&info));
     }
@@ -186,7 +209,11 @@ mod tests {
     #[test]
     fn available_with_js_config() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("playwright.config.js"), b"module.exports = {};").unwrap();
+        std::fs::write(
+            dir.path().join("playwright.config.js"),
+            b"module.exports = {};",
+        )
+        .unwrap();
         let info = nextjs_info(&dir.path().to_string_lossy());
         assert!(PlaywrightRunner::default().is_available(&info));
     }
@@ -209,7 +236,9 @@ mod tests {
     #[test]
     fn run_pass_returns_pass() {
         let json = r#"{"stats":{"expected":10,"unexpected":0}}"#;
-        let r = PlaywrightRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        let r = PlaywrightRunner {
+            proc: Arc::new(MockProcessRunner::passing(json)),
+        };
         let result = r.run(&nextjs_info("/tmp")).unwrap();
         assert!(matches!(result.status, LayerStatus::Pass));
         assert_eq!(result.metrics.passed, 10);
@@ -220,7 +249,9 @@ mod tests {
     #[test]
     fn run_fail_returns_fail_with_finding() {
         let json = r#"{"stats":{"expected":8,"unexpected":2}}"#;
-        let r = PlaywrightRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
+        let r = PlaywrightRunner {
+            proc: Arc::new(MockProcessRunner::failing(json)),
+        };
         let result = r.run(&nextjs_info("/tmp")).unwrap();
         assert!(matches!(result.status, LayerStatus::Fail));
         assert_eq!(result.metrics.failed, 2);

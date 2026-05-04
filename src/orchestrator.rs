@@ -27,11 +27,21 @@ pub struct VerificationOrchestrator<'a> {
 
 impl<'a> VerificationOrchestrator<'a> {
     pub fn new(runners: Vec<&'a dyn TestRunner>) -> Self {
-        Self { runners, no_cache: false, fail_fast: false }
+        Self {
+            runners,
+            no_cache: false,
+            fail_fast: false,
+        }
     }
 
-    pub fn with_no_cache(mut self) -> Self { self.no_cache = true; self }
-    pub fn with_fail_fast(mut self) -> Self { self.fail_fast = true; self }
+    pub fn with_no_cache(mut self) -> Self {
+        self.no_cache = true;
+        self
+    }
+    pub fn with_fail_fast(mut self) -> Self {
+        self.fail_fast = true;
+        self
+    }
 
     pub fn run_with_progress<F>(&self, project: &ProjectInfo, on_start: F) -> Result<BarzelReport>
     where
@@ -107,9 +117,9 @@ impl<'a> VerificationOrchestrator<'a> {
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
 
-        let logic_failed = phase1_results.iter().any(|(_, r)| {
-            matches!(r.status, LayerStatus::Fail) && r.name == "logic"
-        });
+        let logic_failed = phase1_results
+            .iter()
+            .any(|(_, r)| matches!(r.status, LayerStatus::Fail) && r.name == "logic");
 
         // Phase 2: Structural runs after — skip if logic already failed (useless to mutate broken tests)
         let mut phase2_results: Vec<(usize, LayerResult)> = Vec::new();
@@ -189,7 +199,10 @@ impl<'a> VerificationOrchestrator<'a> {
                     message: format!("Runner '{}' failed: {}", runner.name(), e),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: 0,
             },
         }
@@ -230,11 +243,20 @@ mod tests {
         }
     }
 
-    struct PassRunner { layer: Layer, name: &'static str }
+    struct PassRunner {
+        layer: Layer,
+        name: &'static str,
+    }
     impl TestRunner for PassRunner {
-        fn name(&self) -> &'static str { self.name }
-        fn layer(&self) -> Layer { self.layer }
-        fn is_available(&self, _: &ProjectInfo) -> bool { true }
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn layer(&self) -> Layer {
+            self.layer
+        }
+        fn is_available(&self, _: &ProjectInfo) -> bool {
+            true
+        }
         fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
             Ok(LayerResult {
                 name: self.layer.as_str().to_string(),
@@ -247,11 +269,19 @@ mod tests {
         }
     }
 
-    struct FailRunner { layer: Layer }
+    struct FailRunner {
+        layer: Layer,
+    }
     impl TestRunner for FailRunner {
-        fn name(&self) -> &'static str { "fail-runner" }
-        fn layer(&self) -> Layer { self.layer }
-        fn is_available(&self, _: &ProjectInfo) -> bool { true }
+        fn name(&self) -> &'static str {
+            "fail-runner"
+        }
+        fn layer(&self) -> Layer {
+            self.layer
+        }
+        fn is_available(&self, _: &ProjectInfo) -> bool {
+            true
+        }
         fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
             Ok(LayerResult {
                 name: self.layer.as_str().to_string(),
@@ -263,7 +293,10 @@ mod tests {
                     message: "forced failure".to_string(),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: 1,
             })
         }
@@ -271,21 +304,39 @@ mod tests {
 
     struct ErrorRunner;
     impl TestRunner for ErrorRunner {
-        fn name(&self) -> &'static str { "error-runner" }
-        fn layer(&self) -> Layer { Layer::Logic }
-        fn is_available(&self, _: &ProjectInfo) -> bool { true }
+        fn name(&self) -> &'static str {
+            "error-runner"
+        }
+        fn layer(&self) -> Layer {
+            Layer::Logic
+        }
+        fn is_available(&self, _: &ProjectInfo) -> bool {
+            true
+        }
         fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
-            Err(crate::error::BarzelError::Detection("forced error".to_string()))
+            Err(crate::error::BarzelError::Detection(
+                "forced error".to_string(),
+            ))
         }
     }
 
     struct UnavailableRunner;
     impl TestRunner for UnavailableRunner {
-        fn name(&self) -> &'static str { "unavailable" }
-        fn layer(&self) -> Layer { Layer::Logic }
-        fn is_available(&self, _: &ProjectInfo) -> bool { false }
-        fn skip_message(&self) -> &'static str { "tool not installed" }
-        fn run(&self, _: &ProjectInfo) -> Result<LayerResult> { unreachable!() }
+        fn name(&self) -> &'static str {
+            "unavailable"
+        }
+        fn layer(&self) -> Layer {
+            Layer::Logic
+        }
+        fn is_available(&self, _: &ProjectInfo) -> bool {
+            false
+        }
+        fn skip_message(&self) -> &'static str {
+            "tool not installed"
+        }
+        fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
+            unreachable!()
+        }
     }
 
     #[test]
@@ -314,12 +365,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
         // Logic fails, then Hostile is registered but must NOT run
-        let fail = FailRunner { layer: Layer::Logic };
-        let pass = PassRunner { layer: Layer::Hostile, name: "hostile-runner" };
-        let orch = VerificationOrchestrator::new(vec![
-            &fail as &dyn TestRunner,
-            &pass as &dyn TestRunner,
-        ]).with_fail_fast();
+        let fail = FailRunner {
+            layer: Layer::Logic,
+        };
+        let pass = PassRunner {
+            layer: Layer::Hostile,
+            name: "hostile-runner",
+        };
+        let orch =
+            VerificationOrchestrator::new(vec![&fail as &dyn TestRunner, &pass as &dyn TestRunner])
+                .with_fail_fast();
         let report = orch.run(&project).unwrap();
         // Only the failing layer — hostile was never called
         assert_eq!(report.layers.len(), 1);
@@ -330,18 +385,30 @@ mod tests {
     fn fail_fast_stops_on_any_layer_failure_not_just_logic() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let pass = PassRunner { layer: Layer::Logic, name: "logic-pass" };
-        let fail = FailRunner { layer: Layer::Hostile };
-        let pass2 = PassRunner { layer: Layer::Structural, name: "struct-pass" };
+        let pass = PassRunner {
+            layer: Layer::Logic,
+            name: "logic-pass",
+        };
+        let fail = FailRunner {
+            layer: Layer::Hostile,
+        };
+        let pass2 = PassRunner {
+            layer: Layer::Structural,
+            name: "struct-pass",
+        };
         let orch = VerificationOrchestrator::new(vec![
             &pass as &dyn TestRunner,
             &fail as &dyn TestRunner,
             &pass2 as &dyn TestRunner,
-        ]).with_fail_fast();
+        ])
+        .with_fail_fast();
         let report = orch.run(&project).unwrap();
         // Stopped after hostile failure — structural never ran
         assert_eq!(report.layers.len(), 2);
-        assert!(report.layers.iter().any(|l| matches!(l.status, LayerStatus::Fail)));
+        assert!(report
+            .layers
+            .iter()
+            .any(|l| matches!(l.status, LayerStatus::Fail)));
         assert!(!report.layers.iter().any(|l| l.runner == "struct-pass"));
     }
 
@@ -349,12 +416,15 @@ mod tests {
     fn without_fail_fast_all_runners_execute() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let fail = FailRunner { layer: Layer::Logic };
-        let pass = PassRunner { layer: Layer::Hostile, name: "second-runner" };
-        let orch = VerificationOrchestrator::new(vec![
-            &fail as &dyn TestRunner,
-            &pass as &dyn TestRunner,
-        ]);
+        let fail = FailRunner {
+            layer: Layer::Logic,
+        };
+        let pass = PassRunner {
+            layer: Layer::Hostile,
+            name: "second-runner",
+        };
+        let orch =
+            VerificationOrchestrator::new(vec![&fail as &dyn TestRunner, &pass as &dyn TestRunner]);
         let report = orch.run(&project).unwrap();
         assert_eq!(report.layers.len(), 2);
     }
@@ -364,8 +434,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
         // Register hostile before logic — output should still be logic first
-        let hostile = PassRunner { layer: Layer::Hostile, name: "hostile-runner" };
-        let logic = PassRunner { layer: Layer::Logic, name: "logic-runner" };
+        let hostile = PassRunner {
+            layer: Layer::Hostile,
+            name: "hostile-runner",
+        };
+        let logic = PassRunner {
+            layer: Layer::Logic,
+            name: "logic-runner",
+        };
         let orch = VerificationOrchestrator::new(vec![
             &hostile as &dyn TestRunner,
             &logic as &dyn TestRunner,
@@ -379,40 +455,67 @@ mod tests {
     fn structural_layer_is_cached_after_successful_run() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
+        let runner = PassRunner {
+            layer: Layer::Structural,
+            name: "mock-mutants",
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(crate::cache::is_cached(dir.path(), Language::Rust, "mock-mutants"));
+        assert!(crate::cache::is_cached(
+            dir.path(),
+            Language::Rust,
+            "mock-mutants"
+        ));
     }
 
     #[test]
     fn logic_layer_is_not_cached() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let runner = PassRunner { layer: Layer::Logic, name: "mock-proptest" };
+        let runner = PassRunner {
+            layer: Layer::Logic,
+            name: "mock-proptest",
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "mock-proptest"));
+        assert!(!crate::cache::is_cached(
+            dir.path(),
+            Language::Rust,
+            "mock-proptest"
+        ));
     }
 
     #[test]
     fn hostile_layer_is_not_cached() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let runner = PassRunner { layer: Layer::Hostile, name: "mock-semgrep" };
+        let runner = PassRunner {
+            layer: Layer::Hostile,
+            name: "mock-semgrep",
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "mock-semgrep"));
+        assert!(!crate::cache::is_cached(
+            dir.path(),
+            Language::Rust,
+            "mock-semgrep"
+        ));
     }
 
     #[test]
     fn failed_structural_run_does_not_write_cache() {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let runner = FailRunner { layer: Layer::Structural };
+        let runner = FailRunner {
+            layer: Layer::Structural,
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         orch.run(&project).unwrap();
-        assert!(!crate::cache::is_cached(dir.path(), Language::Rust, "fail-runner"));
+        assert!(!crate::cache::is_cached(
+            dir.path(),
+            Language::Rust,
+            "fail-runner"
+        ));
     }
 
     #[test]
@@ -420,7 +523,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
         crate::cache::save_current_hash(dir.path(), Language::Rust, "mock-mutants");
-        let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
+        let runner = PassRunner {
+            layer: Layer::Structural,
+            name: "mock-mutants",
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
         let report = orch.run(&project).unwrap();
         assert!(matches!(report.layers[0].status, LayerStatus::Skipped));
@@ -432,7 +538,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
         crate::cache::save_current_hash(dir.path(), Language::Rust, "mock-mutants");
-        let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
+        let runner = PassRunner {
+            layer: Layer::Structural,
+            name: "mock-mutants",
+        };
         let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]).with_no_cache();
         let report = orch.run(&project).unwrap();
         assert!(matches!(report.layers[0].status, LayerStatus::Pass));
@@ -459,11 +568,20 @@ mod tests {
         static CONCURRENT_COUNT: AtomicU32 = AtomicU32::new(0);
         static MAX_CONCURRENT: AtomicU32 = AtomicU32::new(0);
 
-        struct SlowRunner { layer: Layer, name: &'static str }
+        struct SlowRunner {
+            layer: Layer,
+            name: &'static str,
+        }
         impl TestRunner for SlowRunner {
-            fn name(&self) -> &'static str { self.name }
-            fn layer(&self) -> Layer { self.layer }
-            fn is_available(&self, _: &ProjectInfo) -> bool { true }
+            fn name(&self) -> &'static str {
+                self.name
+            }
+            fn layer(&self) -> Layer {
+                self.layer
+            }
+            fn is_available(&self, _: &ProjectInfo) -> bool {
+                true
+            }
             fn run(&self, _: &ProjectInfo) -> Result<LayerResult> {
                 let count = CONCURRENT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
                 MAX_CONCURRENT.fetch_max(count, Ordering::SeqCst);
@@ -482,8 +600,14 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let project = rust_project(dir.path());
-        let logic = SlowRunner { layer: Layer::Logic, name: "slow-logic" };
-        let hostile = SlowRunner { layer: Layer::Hostile, name: "slow-hostile" };
+        let logic = SlowRunner {
+            layer: Layer::Logic,
+            name: "slow-logic",
+        };
+        let hostile = SlowRunner {
+            layer: Layer::Hostile,
+            name: "slow-hostile",
+        };
         let _ = Arc::new(()); // prevent optimization
 
         let orch = VerificationOrchestrator::new(vec![
@@ -493,7 +617,10 @@ mod tests {
         orch.run(&project).unwrap();
 
         // Both ran concurrently — max concurrent count should be 2
-        assert_eq!(MAX_CONCURRENT.load(Ordering::SeqCst), 2,
-            "Logic and Hostile should run in parallel");
+        assert_eq!(
+            MAX_CONCURRENT.load(Ordering::SeqCst),
+            2,
+            "Logic and Hostile should run in parallel"
+        );
     }
 }

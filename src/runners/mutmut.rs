@@ -14,29 +14,43 @@ pub struct MutmutRunner {
 
 impl Default for MutmutRunner {
     fn default() -> Self {
-        Self { mutation_threshold: 80.0, proc: Arc::new(OsProcessRunner) }
+        Self {
+            mutation_threshold: 80.0,
+            proc: Arc::new(OsProcessRunner),
+        }
     }
 }
 
 impl MutmutRunner {
     pub fn with_threshold(mutation_threshold: f64) -> Self {
-        Self { mutation_threshold, ..Default::default() }
+        Self {
+            mutation_threshold,
+            ..Default::default()
+        }
     }
 }
 
 impl TestRunner for MutmutRunner {
-    fn name(&self) -> &'static str { "mutmut" }
-    fn layer(&self) -> Layer { Layer::Structural }
+    fn name(&self) -> &'static str {
+        "mutmut"
+    }
+    fn layer(&self) -> Layer {
+        Layer::Structural
+    }
 
     fn skip_message(&self) -> &'static str {
         "mutmut not installed — run `pip install mutmut` to enable Python mutation testing (target: ≥80%)"
     }
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
-        if project.language != crate::detect::Language::Python { return false; }
+        if project.language != crate::detect::Language::Python {
+            return false;
+        }
         let root = Path::new(&project.root);
         let local = root.join(".venv").join("bin").join("mutmut");
-        if local.exists() { return true; }
+        if local.exists() {
+            return true;
+        }
         self.proc.is_available("mutmut", &["--version"])
     }
 
@@ -98,7 +112,10 @@ impl TestRunner for MutmutRunner {
                     runner: "mutmut".to_string(),
                     status,
                     findings,
-                    metrics: LayerMetrics { mutation_score, ..Default::default() },
+                    metrics: LayerMetrics {
+                        mutation_score,
+                        ..Default::default()
+                    },
                     duration_ms: start.elapsed().as_millis() as u64,
                 })
             }
@@ -118,7 +135,10 @@ impl TestRunner for MutmutRunner {
                     ),
                     ..Default::default()
                 }],
-                metrics: LayerMetrics { failed: 1, ..Default::default() },
+                metrics: LayerMetrics {
+                    failed: 1,
+                    ..Default::default()
+                },
                 duration_ms: start.elapsed().as_millis() as u64,
             }),
         }
@@ -159,7 +179,10 @@ pub fn parse_mutmut_results(output: &str) -> Option<f64> {
 }
 
 fn extract_count_from_mutmut_line(line: &str) -> u64 {
-    line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0)
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 fn parse_pct_from_line(line: &str) -> Option<f64> {
@@ -191,31 +214,54 @@ mod tests {
     }
 
     fn runner_with(mock: MockProcessRunner) -> MutmutRunner {
-        MutmutRunner { proc: Arc::new(mock), ..Default::default() }
+        MutmutRunner {
+            proc: Arc::new(mock),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn name_is_mutmut() { assert_eq!(MutmutRunner::default().name(), "mutmut"); }
+    fn name_is_mutmut() {
+        assert_eq!(MutmutRunner::default().name(), "mutmut");
+    }
 
     #[test]
-    fn layer_is_structural() { assert!(matches!(MutmutRunner::default().layer(), Layer::Structural)); }
+    fn layer_is_structural() {
+        assert!(matches!(MutmutRunner::default().layer(), Layer::Structural));
+    }
 
     #[test]
     fn not_available_for_rust() {
-        let r = MutmutRunner { proc: Arc::new(MockProcessRunner::passing("")), ..Default::default() };
-        let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
+        let r = MutmutRunner {
+            proc: Arc::new(MockProcessRunner::passing("")),
+            ..Default::default()
+        };
+        let i = ProjectInfo {
+            language: Language::Rust,
+            root: "/tmp".to_string(),
+            has_tests: false,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
         assert!(!r.is_available(&i));
     }
 
     #[test]
     fn available_when_system_mutmut_present() {
-        let r = MutmutRunner { proc: Arc::new(MockProcessRunner::passing("mutmut 2.4.5")), ..Default::default() };
+        let r = MutmutRunner {
+            proc: Arc::new(MockProcessRunner::passing("mutmut 2.4.5")),
+            ..Default::default()
+        };
         assert!(r.is_available(&py_info()));
     }
 
     #[test]
     fn not_available_when_mutmut_missing() {
-        let r = MutmutRunner { proc: Arc::new(MockProcessRunner::unavailable()), ..Default::default() };
+        let r = MutmutRunner {
+            proc: Arc::new(MockProcessRunner::unavailable()),
+            ..Default::default()
+        };
         assert!(!r.is_available(&py_info()));
     }
 
@@ -243,19 +289,36 @@ mod tests {
     #[test]
     fn run_uses_configurable_threshold() {
         let mock = MockProcessRunner::passing("KILLED 6\nSURVIVED 4"); // 60%
-        let r = MutmutRunner { mutation_threshold: 50.0, proc: Arc::new(mock), };
-        assert!(matches!(r.run(&py_info()).unwrap().status, LayerStatus::Pass));
+        let r = MutmutRunner {
+            mutation_threshold: 50.0,
+            proc: Arc::new(mock),
+        };
+        assert!(matches!(
+            r.run(&py_info()).unwrap().status,
+            LayerStatus::Pass
+        ));
     }
 
     #[test]
     fn run_fail_on_subprocess_error() {
         struct BrokenProc;
         impl SubprocessRunner for BrokenProc {
-            fn run(&self, _: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
-                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+            fn run(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &Path,
+            ) -> std::io::Result<crate::process::ProcessOutput> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not found",
+                ))
             }
         }
-        let r = MutmutRunner { proc: Arc::new(BrokenProc), ..Default::default() };
+        let r = MutmutRunner {
+            proc: Arc::new(BrokenProc),
+            ..Default::default()
+        };
         let res = r.run(&py_info()).unwrap();
         assert!(matches!(res.status, LayerStatus::Fail));
         assert_eq!(res.findings[0].severity, Severity::Critical);
