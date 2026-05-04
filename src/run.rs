@@ -458,6 +458,15 @@ fn emit_report(report: &BarzelReport, stdio: bool, json_out: bool, target_path: 
     } else {
         report.save(target_path)?;
     }
+
+    // Best-effort: persist metric snapshots for future trend/regression detection.
+    // A write failure is warned on stderr but never propagates — run result is unaffected.
+    if let Err(e) = crate::history::save_from_report(report, target_path) {
+        if !stdio {
+            eprintln!("{} history write failed: {}", "barzel:".yellow(), e);
+        }
+    }
+
     Ok(())
 }
 

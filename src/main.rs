@@ -5,6 +5,7 @@ mod config;
 mod detect;
 mod diff;
 mod error;
+mod history;
 mod http;
 mod init;
 mod orchestrator;
