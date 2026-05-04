@@ -1410,11 +1410,7 @@ mod tests {
 
     #[test]
     fn pnpm_quoted_hash_in_pattern_not_truncated() {
-        let dir = tempdir().unwrap();
-        // Pattern value containing # inside quotes must not be truncated.
-        // Using a directory name without # (filesystem-safe) but verifying the
-        // parser does not truncate a quoted value that has # before the closing quote.
-        // We encode this as a unit test on the helper directly.
+        // Direct unit test for strip_yaml_inline_comment: # inside quotes is not a comment.
         assert_eq!(
             strip_yaml_inline_comment(r#""packages/#internal" # comment"#),
             r#""packages/#internal""#,
