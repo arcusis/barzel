@@ -498,6 +498,41 @@ mod tests {
     }
 
     #[test]
+    fn runner_failed_finding_has_reproduce_cmd() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = ErrorRunner;
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+        let report = orch.run(&project).unwrap();
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!cmd.is_empty(), "RUNNER_FAILED finding must have a reproduce_cmd");
+    }
+
+    #[test]
+    fn runner_unavailable_finding_has_reproduce_cmd() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = UnavailableRunner;
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+        let report = orch.run(&project).unwrap();
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!cmd.is_empty(), "RUNNER_UNAVAILABLE finding must have a reproduce_cmd");
+    }
+
+    #[test]
+    fn cached_finding_has_reproduce_cmd() {
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        crate::cache::save_current_hash(dir.path(), Language::Rust, "mock-mutants");
+        let runner = PassRunner { layer: Layer::Structural, name: "mock-mutants" };
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+        let report = orch.run(&project).unwrap();
+        assert_eq!(report.layers[0].findings[0].code, "CACHED");
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!cmd.is_empty(), "CACHED finding must have a reproduce_cmd");
+    }
+
+    #[test]
     fn logic_and_hostile_run_in_parallel() {
         use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;

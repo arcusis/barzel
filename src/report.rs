@@ -125,6 +125,16 @@ impl Default for Finding {
     }
 }
 
+const NAMED_LAYERS: &[&str] = &["logic", "structural", "hostile", "operational"];
+
+fn reproduce_cmd_fallback(layer_name: &str) -> String {
+    if NAMED_LAYERS.contains(&layer_name) {
+        format!("barzel run --layer {} --json", layer_name)
+    } else {
+        "barzel run --json".to_string()
+    }
+}
+
 impl BarzelReport {
     pub fn new(project: ProjectInfo) -> Self {
         let id = Uuid::new_v4().to_string();
@@ -152,7 +162,15 @@ impl BarzelReport {
         }
     }
 
-    pub fn add_layer(&mut self, layer: LayerResult) {
+    pub fn add_layer(&mut self, mut layer: LayerResult) {
+        // Every finding must carry a reproduce_cmd so agents can always re-run a finding.
+        let fallback = reproduce_cmd_fallback(&layer.name);
+        for finding in &mut layer.findings {
+            if finding.reproduce_cmd.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                finding.reproduce_cmd = Some(fallback.clone());
+            }
+        }
+
         for finding in &layer.findings {
             self.summary.total_findings += 1;
             match finding.severity {
@@ -463,6 +481,81 @@ mod tests {
         let mut report = BarzelReport::new(dummy_project());
         report.add_layer(layer_with_findings(vec![finding(Severity::Critical)]));
         assert_eq!(report.summary.overall_status, report.status);
+    }
+
+    // ── reproduce_cmd invariant ───────────────────────────────────────────────
+
+    fn layer_for_reproduce_test(layer_name: &str, findings: Vec<Finding>) -> LayerResult {
+        LayerResult {
+            name: layer_name.to_string(),
+            runner: "test-runner".to_string(),
+            status: LayerStatus::Pass,
+            findings,
+            metrics: LayerMetrics::default(),
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn add_layer_fills_missing_reproduce_cmd() {
+        let mut report = BarzelReport::new(dummy_project());
+        let f = Finding {
+            severity: Severity::High,
+            code: "MISSING".to_string(),
+            message: "no reproduce_cmd set".to_string(),
+            reproduce_cmd: None,
+            ..Default::default()
+        };
+        report.add_layer(layer_for_reproduce_test("logic", vec![f]));
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!cmd.is_empty(), "reproduce_cmd must be filled when None");
+        assert!(cmd.contains("--layer logic"), "fallback must name the layer");
+    }
+
+    #[test]
+    fn add_layer_fills_blank_reproduce_cmd() {
+        let mut report = BarzelReport::new(dummy_project());
+        let f = Finding {
+            severity: Severity::Medium,
+            code: "BLANK".to_string(),
+            message: "blank reproduce_cmd".to_string(),
+            reproduce_cmd: Some("   ".to_string()),
+            ..Default::default()
+        };
+        report.add_layer(layer_for_reproduce_test("structural", vec![f]));
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert!(!cmd.trim().is_empty(), "reproduce_cmd must be filled when blank");
+        assert!(cmd.contains("--layer structural"));
+    }
+
+    #[test]
+    fn add_layer_preserves_existing_reproduce_cmd() {
+        let mut report = BarzelReport::new(dummy_project());
+        let f = Finding {
+            severity: Severity::Low,
+            code: "EXISTING".to_string(),
+            message: "has reproduce_cmd already".to_string(),
+            reproduce_cmd: Some("cargo test --test my_test".to_string()),
+            ..Default::default()
+        };
+        report.add_layer(layer_for_reproduce_test("logic", vec![f]));
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert_eq!(cmd, "cargo test --test my_test", "existing reproduce_cmd must not be overwritten");
+    }
+
+    #[test]
+    fn add_layer_unknown_layer_name_uses_generic_fallback() {
+        let mut report = BarzelReport::new(dummy_project());
+        let f = Finding {
+            severity: Severity::Info,
+            code: "UNKNOWN_LAYER".to_string(),
+            message: "layer name not in the known set".to_string(),
+            reproduce_cmd: None,
+            ..Default::default()
+        };
+        report.add_layer(layer_for_reproduce_test("custom-layer", vec![f]));
+        let cmd = report.layers[0].findings[0].reproduce_cmd.as_deref().unwrap_or("");
+        assert_eq!(cmd, "barzel run --json", "unknown layer must fall back to generic command");
     }
 
     // ── save / load ───────────────────────────────────────────────────────────
