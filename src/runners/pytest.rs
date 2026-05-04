@@ -148,8 +148,8 @@ fn has_pytest_cov(root: &Path) -> bool {
             if content.contains("pytest-cov") { return true; }
         }
     }
-    // Also check if pytest-cov is installed in venv
-    root.join(".venv").join("lib").exists()
+    // Check POSIX venv: .venv/lib/<pythonX.Y>/site-packages/pytest_cov
+    if root.join(".venv").join("lib").exists()
         && venv_tool(root, "pytest").is_some()
         && std::fs::read_dir(root.join(".venv").join("lib"))
             .ok()
@@ -157,6 +157,12 @@ fn has_pytest_cov(root: &Path) -> bool {
             .and_then(|e| e.ok())
             .map(|site| site.path().join("site-packages").join("pytest_cov").exists())
             .unwrap_or(false)
+    {
+        return true;
+    }
+    // Check Windows venv: .venv/Lib/site-packages/pytest_cov
+    root.join(".venv").join("Lib").join("site-packages").join("pytest_cov").exists()
+        && venv_tool(root, "pytest").is_some()
 }
 
 /// Parse `TOTAL ... 85%` line from pytest-cov output.
@@ -370,6 +376,21 @@ mod tests {
     fn parse_coverage_pct_returns_none_when_missing() {
         let pct = parse_coverage_pct("5 passed in 0.45s");
         assert!(pct.is_none());
+    }
+
+    #[test]
+    fn has_pytest_cov_detects_windows_lib_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create .venv/Scripts/pytest.exe (Windows venv executable)
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pytest.exe"), b"").unwrap();
+        // Create .venv/Lib/site-packages/pytest_cov (Windows site-packages layout)
+        let site_pkg = dir.path().join(".venv").join("Lib").join("site-packages").join("pytest_cov");
+        std::fs::create_dir_all(&site_pkg).unwrap();
+
+        assert!(has_pytest_cov(dir.path()),
+            "has_pytest_cov must return true for Windows .venv/Lib/site-packages/pytest_cov layout");
     }
 
     proptest! {
