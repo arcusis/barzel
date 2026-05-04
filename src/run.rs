@@ -71,10 +71,13 @@ pub fn run_verification(
 ) -> Result<BarzelReport> {
     run_verification_with_progress(
         RunVerificationOptions { target, layers, no_cache, fail_fast, stdio, json_out, since },
-        &|_| {},
+        &|_, _| {},
     )
 }
 
+/// Stdio entry point that emits per-runner events with optional workspace package context.
+/// The callback receives `(event, package_path)` where `package_path` is `Some(...)` for
+/// workspace members and `None` for single-project runs.
 pub fn run_verification_stdio_with_progress<F>(
     target: Option<&Path>,
     layers: Option<Vec<String>>,
@@ -84,7 +87,7 @@ pub fn run_verification_stdio_with_progress<F>(
     on_event: &F,
 ) -> Result<BarzelReport>
 where
-    F: Fn(RunnerEvent<'_>) + Sync,
+    F: Fn(RunnerEvent<'_>, Option<&str>) + Sync,
 {
     run_verification_with_progress(
         RunVerificationOptions {
@@ -115,7 +118,7 @@ fn run_verification_with_progress<F>(
     on_event: &F,
 ) -> Result<BarzelReport>
 where
-    F: Fn(RunnerEvent<'_>) + Sync,
+    F: Fn(RunnerEvent<'_>, Option<&str>) + Sync,
 {
     let RunVerificationOptions { target, layers, no_cache, fail_fast, stdio, json_out, since } = options;
 
@@ -182,7 +185,8 @@ where
                 }
             }
 
-            let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio, on_event)?;
+            let single_on_event = |event: RunnerEvent<'_>| on_event(event, None);
+            let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio, &single_on_event)?;
             report.fail_on = cfg.reporting.fail_on.clone();
             // Record diff metadata whether diff succeeded or fell back
             report.diff_since = since.map(str::to_string);
@@ -288,7 +292,9 @@ where
                     cfg.clone()
                 };
 
-                let member_report = run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio, on_event)?;
+                let pkg_path_str = pkg_path.as_str();
+                let member_on_event = |event: RunnerEvent<'_>| on_event(event, Some(pkg_path_str));
+                let member_report = run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio, &member_on_event)?;
 
                 // Store per-package report for rich stdio output
                 use crate::report::WorkspaceMemberReport;
