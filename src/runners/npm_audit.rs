@@ -29,16 +29,32 @@ impl TestRunner for NpmAuditRunner {
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
         if project.language != crate::detect::Language::TypeScript { return false; }
-        let root = Path::new(&project.root);
-        // Needs a lockfile to operate
-        root.join("package-lock.json").exists()
-            || root.join("pnpm-lock.yaml").exists()
-            || root.join("yarn.lock").exists()
+        // Check package root first; fall back to workspace root so members without
+        // their own lockfile (common in pnpm/npm workspaces) are still detected.
+        let has_lockfile = |dir: &Path| {
+            dir.join("package-lock.json").exists()
+                || dir.join("pnpm-lock.yaml").exists()
+                || dir.join("yarn.lock").exists()
+        };
+        has_lockfile(Path::new(&project.root))
+            || project.workspace_root.as_deref().is_some_and(|ws| has_lockfile(Path::new(ws)))
     }
 
     fn run(&self, project: &ProjectInfo) -> Result<LayerResult> {
         let start = Instant::now();
-        let root = Path::new(&project.root);
+        // Use the directory that contains the lockfile as the working dir.
+        // For workspace members this is typically the workspace root.
+        let pkg_root = Path::new(&project.root);
+        let root = if pkg_root.join("pnpm-lock.yaml").exists()
+            || pkg_root.join("package-lock.json").exists()
+            || pkg_root.join("yarn.lock").exists()
+        {
+            pkg_root
+        } else if let Some(ws) = project.workspace_root.as_deref() {
+            Path::new(ws)
+        } else {
+            pkg_root
+        };
 
         let (cmd, args): (&str, &[&str]) = if root.join("pnpm-lock.yaml").exists() {
             ("pnpm", &["audit", "--json"])
@@ -232,6 +248,59 @@ mod tests {
         let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::failing(json)) };
         let result = r.run(&ts_info(&dir.path().to_string_lossy())).unwrap();
         assert!(matches!(result.status, LayerStatus::Partial));
+    }
+
+    #[test]
+    fn available_with_workspace_root_pnpm_lock() {
+        let ws_dir  = tempdir().unwrap();
+        std::fs::write(ws_dir.path().join("pnpm-lock.yaml"), b"lockfileVersion: '6.0'").unwrap();
+        let pkg_dir = tempdir().unwrap();
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: pkg_dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some("my-app".to_string()),
+            frameworks: Default::default(),
+            workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
+        };
+        assert!(NpmAuditRunner::default().is_available(&info),
+            "should be available when lockfile is at workspace root");
+    }
+
+    #[test]
+    fn not_available_without_lockfile_even_with_workspace_root() {
+        let ws_dir  = tempdir().unwrap();
+        let pkg_dir = tempdir().unwrap();
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: pkg_dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: Some("my-app".to_string()),
+            frameworks: Default::default(),
+            workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
+        };
+        assert!(!NpmAuditRunner::default().is_available(&info),
+            "should not be available when neither package root nor workspace root has a lockfile");
+    }
+
+    #[test]
+    fn run_uses_workspace_root_lockfile_dir_as_cwd() {
+        let ws_dir = tempdir().unwrap();
+        std::fs::write(ws_dir.path().join("pnpm-lock.yaml"), b"lockfileVersion: '6.0'").unwrap();
+        let pkg_dir = tempdir().unwrap();
+        let info = ProjectInfo {
+            language: Language::TypeScript,
+            root: pkg_dir.path().to_string_lossy().to_string(),
+            has_tests: false,
+            package_name: Some("sub".to_string()),
+            frameworks: Default::default(),
+            workspace_root: Some(ws_dir.path().to_string_lossy().to_string()),
+        };
+        let json = r#"{"vulnerabilities":{}}"#;
+        let r = NpmAuditRunner { proc: Arc::new(MockProcessRunner::passing(json)) };
+        // Should not panic — runner resolves lockfile at workspace root and uses pnpm
+        let result = r.run(&info).unwrap();
+        assert!(matches!(result.status, LayerStatus::Pass));
     }
 
     #[test]

@@ -152,26 +152,49 @@ fn handle_stdio() -> ExitCode {
 
         "check" => {
             let path = req.project_path.as_deref().map(Path::new);
-            match detect::detect_project(path.unwrap_or_else(|| std::path::Path::new("."))) {
-                Ok(project) => {
+            let target = path.unwrap_or_else(|| std::path::Path::new("."));
+            match detect::detect_workspace(target) {
+                Ok(workspace) => {
+                    use crate::detect::WorkspaceInfo;
                     use crate::process::OsProcessRunner;
-                    let cfg = config::BarzelConfig::load_for_project(
-                        path.unwrap_or_else(|| std::path::Path::new("."))
-                    );
-                    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
-                    let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+                    let cfg = config::BarzelConfig::load_for_project(target);
 
-                    let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
-                    let resp = create_response("success", request_id, Some(serde_json::json!({
-                        "language": project.language.to_string(),
-                        "frameworks": {
-                            "is_nextjs": project.frameworks.is_nextjs,
-                            "has_ai_deps": project.frameworks.has_ai_deps,
-                            "ai_frameworks": project.frameworks.ai_frameworks,
-                        },
-                        "missing_required_tools": missing_required,
-                        "tools": tool_json,
-                    })), None);
+                    let payload = match workspace {
+                        WorkspaceInfo::Single(project) => {
+                            let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
+                            let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+                            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
+                            serde_json::json!({
+                                "language": project.language.to_string(),
+                                "frameworks": {
+                                    "is_nextjs": project.frameworks.is_nextjs,
+                                    "has_ai_deps": project.frameworks.has_ai_deps,
+                                    "ai_frameworks": project.frameworks.ai_frameworks,
+                                },
+                                "missing_required_tools": missing_required,
+                                "tools": tool_json,
+                            })
+                        }
+                        WorkspaceInfo::Multi { kind, members } => {
+                            let statuses = tool_registry::probe_all_with_workspace_context(&OsProcessRunner, &members, &cfg);
+                            let tool_json = tool_registry::tool_statuses_to_json(&statuses);
+                            let missing_required = statuses.iter().filter(|s| s.required && !s.available).count();
+                            let packages: Vec<_> = members.iter().map(|(rel_path, p)| serde_json::json!({
+                                "path":     rel_path,
+                                "name":     p.package_name,
+                                "language": p.language.to_string(),
+                            })).collect();
+                            serde_json::json!({
+                                "is_workspace":    true,
+                                "workspace_kind":  kind,
+                                "packages":        packages,
+                                "missing_required_tools": missing_required,
+                                "tools":           tool_json,
+                            })
+                        }
+                    };
+
+                    let resp = create_response("success", request_id, Some(payload), None);
                     println!("{}", serde_json::to_string(&resp).unwrap());
                     ExitCode::SUCCESS
                 }
@@ -528,30 +551,56 @@ fn cmd_compare(baseline_ref: &str, head_ref: &str, json_out: bool) -> error::Res
 // ── Check command ─────────────────────────────────────────────────────────────
 
 fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
-    use crate::detect::detect_project;
+    use crate::detect::{detect_workspace, WorkspaceInfo};
     use crate::process::OsProcessRunner;
 
     let target = path.unwrap_or_else(|| std::path::Path::new("."));
-    let project = detect_project(target)?;
     let cfg = config::BarzelConfig::load_for_project(target);
 
-    println!(
-        "{} Barzel tool check — {} project",
-        "→".bright_blue(),
-        project.language.to_string().bright_green()
-    );
+    let (statuses, header, frameworks) = match detect_workspace(target)? {
+        WorkspaceInfo::Single(project) => {
+            let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
+            let header = format!("Barzel tool check — {} project", project.language.to_string().bright_green());
+            let frameworks = Some(project.frameworks);
+            (statuses, header, frameworks)
+        }
+        WorkspaceInfo::Multi { kind, members } => {
+            let member_summary: Vec<String> = members.iter()
+                .map(|(p, _)| p.clone())
+                .collect();
+            let kind_str = format!("{:?}", kind).to_lowercase();
+            let header = format!(
+                "Barzel workspace check — {} ({} members: {})",
+                kind_str.bright_green(),
+                members.len(),
+                member_summary.join(", ")
+            );
+            let statuses = tool_registry::probe_all_with_workspace_context(&OsProcessRunner, &members, &cfg);
+            (statuses, header, None)
+        }
+    };
+
+    println!("{} {}", "→".bright_blue(), header);
     println!();
 
-    let statuses = tool_registry::probe_all_with_context(&OsProcessRunner, &project, &cfg);
+    print_check_sections(&statuses, frameworks.as_ref());
 
-    // Partition into three groups
+    Ok(())
+}
+
+fn print_check_sections(
+    statuses: &[tool_registry::ToolStatus],
+    frameworks: Option<&crate::detect::ProjectFrameworks>,
+) {
     let required: Vec<_> = statuses.iter().filter(|s| s.required).collect();
     let applicable_disabled: Vec<_> = statuses.iter().filter(|s| s.applicable && !s.required).collect();
     let not_applicable: Vec<_> = statuses.iter().filter(|s| !s.applicable).collect();
 
-    // Section 1: required tools (applicable + layer enabled)
+    let section_label = if frameworks.is_some() { "this project" } else { "this workspace" };
+
+    // Section 1: required tools
     if !required.is_empty() {
-        println!("  {} Required for this project:", "→".bright_blue());
+        println!("  {} Required for {}:", "→".bright_blue(), section_label);
         let missing_required = required.iter().filter(|s| !s.available).count();
         for s in &required {
             let icon = if s.available { "✓".bright_green().to_string() } else { "✗".bright_red().to_string() };
@@ -572,7 +621,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Section 2: applicable but layer disabled — informational only
+    // Section 2: applicable but layer disabled
     if !applicable_disabled.is_empty() {
         println!();
         println!("  {} Applicable but layer disabled in config:", "→".dimmed());
@@ -582,7 +631,7 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Section 3: not applicable — optional ecosystem tools dimmed
+    // Section 3: not applicable
     if !not_applicable.is_empty() {
         println!();
         println!("  {} Other ecosystem tools (not applicable to this project):", "→".dimmed());
@@ -592,22 +641,22 @@ fn cmd_check(path: Option<&std::path::Path>) -> error::Result<()> {
         }
     }
 
-    // Show detected frameworks
-    if project.frameworks.has_ai_deps {
-        println!();
-        println!(
-            "  {} AI frameworks detected: {}",
-            "→".bright_blue(),
-            project.frameworks.ai_frameworks.join(", ").bright_yellow()
-        );
-        println!("    aisec runner will activate automatically.");
+    // Framework notes (single-project only)
+    if let Some(fw) = frameworks {
+        if fw.has_ai_deps {
+            println!();
+            println!(
+                "  {} AI frameworks detected: {}",
+                "→".bright_blue(),
+                fw.ai_frameworks.join(", ").bright_yellow()
+            );
+            println!("    aisec runner will activate automatically.");
+        }
+        if fw.is_nextjs {
+            println!();
+            println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
+        }
     }
-    if project.frameworks.is_nextjs {
-        println!();
-        println!("  {} Next.js project detected — playwright E2E runner available.", "→".bright_blue());
-    }
-
-    Ok(())
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -902,8 +951,8 @@ mod tests {
         // Verify the shared helper produces all four required fields.
         use crate::tool_registry::{tool_statuses_to_json, ToolStatus};
         let statuses = vec![
-            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project" },
-            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects" },
+            ToolStatus { name: "cargo", layer: "core", available: true, install: "https://rustup.rs", applicable: true, required: true, reason: "Rust project".to_string() },
+            ToolStatus { name: "semgrep", layer: "hostile", available: false, install: "pip install semgrep", applicable: true, required: true, reason: "all projects".to_string() },
         ];
         let json = tool_statuses_to_json(&statuses);
         assert_eq!(json.len(), 2);
