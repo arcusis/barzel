@@ -3,6 +3,7 @@ use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
 use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::runners::python_venv::venv_tool;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,11 +28,8 @@ impl TestRunner for PytestRunner {
 
     fn is_available(&self, project: &ProjectInfo) -> bool {
         if project.language != crate::detect::Language::Python { return false; }
-        // Check if pytest is installed in the project's environment
         let root = Path::new(&project.root);
-        // Try project-local pytest first, then system
-        let local = root.join(".venv").join("bin").join("pytest");
-        if local.exists() { return true; }
+        if venv_tool(root, "pytest").is_some() { return true; }
         self.proc.is_available("pytest", &["--version"])
     }
 
@@ -39,13 +37,7 @@ impl TestRunner for PytestRunner {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        // Prefer .venv/bin/pytest if it exists
-        let local_pytest = root.join(".venv").join("bin").join("pytest");
-        let pytest_cmd = if local_pytest.exists() {
-            local_pytest.to_string_lossy().to_string()
-        } else {
-            "pytest".to_string()
-        };
+        let pytest_cmd = venv_tool(root, "pytest").unwrap_or_else(|| "pytest".to_string());
 
         // Add --cov if pytest-cov is available in the environment
         let has_cov = has_pytest_cov(root);
@@ -158,7 +150,7 @@ fn has_pytest_cov(root: &Path) -> bool {
     }
     // Also check if pytest-cov is installed in venv
     root.join(".venv").join("lib").exists()
-        && root.join(".venv").join("bin").join("pytest").exists()
+        && venv_tool(root, "pytest").is_some()
         && std::fs::read_dir(root.join(".venv").join("lib"))
             .ok()
             .and_then(|mut d| d.next())
@@ -276,6 +268,51 @@ mod tests {
         let r = PytestRunner { proc: Arc::new(MockProcessRunner::passing("")) };
         let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
+    }
+
+    #[test]
+    fn available_via_windows_scripts_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pytest.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+        let r = PytestRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
+        assert!(r.is_available(&info), "pytest.exe in .venv/Scripts must make runner available");
+    }
+
+    #[test]
+    fn run_uses_windows_venv_pytest_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pytest.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+
+        struct CapturingProc;
+        impl SubprocessRunner for CapturingProc {
+            fn run(&self, cmd: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                assert!(cmd.contains("Scripts") && cmd.ends_with("pytest.exe"),
+                    "run() must use .venv/Scripts/pytest.exe on Windows layout, got: {cmd}");
+                Ok(crate::process::ProcessOutput { stdout: "1 passed in 0.1s".to_string(), stderr: String::new(), success: true })
+            }
+        }
+        let r = PytestRunner { proc: Arc::new(CapturingProc) };
+        r.run(&info).unwrap();
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod mutmut;
 pub mod mypy;
 pub mod npm_audit;
 pub mod pip_audit;
+pub(super) mod python_venv;
 pub mod playwright;
 pub mod proptest;
 pub mod pytest;

@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::plugin::{Layer, TestRunner};
 use crate::process::{OsProcessRunner, SubprocessRunner};
 use crate::report::{Finding, LayerMetrics, LayerResult, LayerStatus, Severity};
+use crate::runners::python_venv::venv_tool;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -31,8 +32,7 @@ impl TestRunner for MypyRunner {
     fn is_available(&self, project: &ProjectInfo) -> bool {
         if project.language != crate::detect::Language::Python { return false; }
         let root = Path::new(&project.root);
-        let local = root.join(".venv").join("bin").join("mypy");
-        if local.exists() { return true; }
+        if venv_tool(root, "mypy").is_some() { return true; }
         self.proc.is_available("mypy", &["--version"])
     }
 
@@ -40,12 +40,7 @@ impl TestRunner for MypyRunner {
         let start = Instant::now();
         let root = Path::new(&project.root);
 
-        let local = root.join(".venv").join("bin").join("mypy");
-        let mypy_cmd = if local.exists() {
-            local.to_string_lossy().to_string()
-        } else {
-            "mypy".to_string()
-        };
+        let mypy_cmd = venv_tool(root, "mypy").unwrap_or_else(|| "mypy".to_string());
 
         match self.proc.run(&mypy_cmd, &[".", "--ignore-missing-imports", "--no-error-summary"], root) {
             Ok(out) => {
@@ -175,6 +170,51 @@ mod tests {
         let r = MypyRunner { proc: Arc::new(MockProcessRunner::passing("")) };
         let i = ProjectInfo { language: Language::Rust, root: "/tmp".to_string(), has_tests: false, package_name: None, frameworks: Default::default(), workspace_root: None };
         assert!(!r.is_available(&i));
+    }
+
+    #[test]
+    fn available_via_windows_scripts_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("mypy.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+        let r = MypyRunner { proc: Arc::new(MockProcessRunner::unavailable()) };
+        assert!(r.is_available(&info), "mypy.exe in .venv/Scripts must make runner available");
+    }
+
+    #[test]
+    fn run_uses_windows_venv_mypy_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts = dir.path().join(".venv").join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("mypy.exe"), b"").unwrap();
+        let info = ProjectInfo {
+            language: Language::Python,
+            root: dir.path().to_string_lossy().to_string(),
+            has_tests: true,
+            package_name: None,
+            frameworks: Default::default(),
+            workspace_root: None,
+        };
+
+        struct CapturingProc;
+        impl SubprocessRunner for CapturingProc {
+            fn run(&self, cmd: &str, _: &[&str], _: &Path) -> std::io::Result<crate::process::ProcessOutput> {
+                assert!(cmd.contains("Scripts") && cmd.ends_with("mypy.exe"),
+                    "run() must use .venv/Scripts/mypy.exe on Windows layout, got: {cmd}");
+                Ok(crate::process::ProcessOutput { stdout: "Success: no issues found in 1 source file".to_string(), stderr: String::new(), success: true })
+            }
+        }
+        let r = MypyRunner { proc: Arc::new(CapturingProc) };
+        r.run(&info).unwrap();
     }
 
     #[test]
