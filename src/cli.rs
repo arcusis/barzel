@@ -20,6 +20,10 @@ pub enum Commands {
     Init {
         /// Target directory (defaults to current directory)
         path: Option<PathBuf>,
+
+        /// Overwrite an existing .barzel.toml
+        #[arg(long)]
+        force: bool,
     },
 
     /// Run the full verification suite (or specific layers)

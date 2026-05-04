@@ -38,6 +38,9 @@ pub(crate) struct StdioRequest {
     pub(crate) package_path: Option<String>,
     #[serde(default)]
     pub(crate) language: Option<String>,
+    /// Overwrite existing .barzel.toml when running the `init` command.
+    #[serde(default)]
+    pub(crate) force: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -329,8 +332,14 @@ pub(crate) fn handle_stdio() -> ExitCode {
         "init" => {
             let path = req.project_path.as_deref().map(Path::new);
             let target = path.unwrap_or_else(|| Path::new("."));
-            match crate::init::run_init(Some(target), true) {
-                Ok(()) => {
+            match crate::init::run_init(Some(target), true, req.force) {
+                Ok(outcome) => {
+                    use crate::init::InitOutcome;
+                    let config_status = match outcome {
+                        InitOutcome::Created    => "created",
+                        InitOutcome::Skipped    => "skipped",
+                        InitOutcome::Overwritten => "overwritten",
+                    };
                     let project = crate::detect::detect_project(target).ok();
                     let resp = create_response(
                         "success",
@@ -338,6 +347,7 @@ pub(crate) fn handle_stdio() -> ExitCode {
                         Some(serde_json::json!({
                             "message": "project initialized",
                             "config_file": ".barzel.toml",
+                            "config_status": config_status,
                             "language": project.as_ref().map(|p| p.language.to_string()),
                             "frameworks": project.as_ref().map(|p| serde_json::json!({
                                 "is_nextjs": p.frameworks.is_nextjs,
@@ -1168,6 +1178,47 @@ mod tests {
         let entries = payload["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["language"].as_str(), Some("rust"));
+    }
+
+    // ── stdio init / force flag ───────────────────────────────────────────────
+
+    #[test]
+    fn stdio_request_parses_force_true() {
+        let json = r#"{"command":"init","force":true}"#;
+        let req: StdioRequest = serde_json::from_str(json).unwrap();
+        assert!(req.force, "force:true must be parsed from request");
+    }
+
+    #[test]
+    fn stdio_request_force_defaults_to_false() {
+        let json = r#"{"command":"init"}"#;
+        let req: StdioRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.force, "force must default to false when absent");
+    }
+
+    #[test]
+    fn init_build_run_data_config_status_skipped() {
+        use crate::init::{InitOutcome, run_init};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
+        // First init creates the file
+        run_init(Some(dir.path()), true, false).unwrap();
+        // Second init without force returns Skipped
+        let outcome = run_init(Some(dir.path()), true, false).unwrap();
+        assert_eq!(outcome, InitOutcome::Skipped);
+    }
+
+    #[test]
+    fn init_force_returns_overwritten_outcome() {
+        use crate::init::{InitOutcome, run_init};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), b"[package]\nname=\"x\"").unwrap();
+        run_init(Some(dir.path()), true, false).unwrap();
+        std::fs::write(dir.path().join(".barzel.toml"), b"# sentinel").unwrap();
+        let outcome = run_init(Some(dir.path()), true, true).unwrap();
+        assert_eq!(outcome, InitOutcome::Overwritten);
+        let content = std::fs::read_to_string(dir.path().join(".barzel.toml")).unwrap();
+        assert!(!content.contains("sentinel"), "force must overwrite sentinel content");
     }
 
     // ── tool registry / check payload ─────────────────────────────────────────

@@ -425,8 +425,8 @@ fn main() -> ExitCode {
     };
 
     match command {
-        Commands::Init { path } => match init::run_init(path.as_deref(), false) {
-            Ok(()) => ExitCode::SUCCESS,
+        Commands::Init { path, force } => match init::run_init(path.as_deref(), false, force) {
+            Ok(_) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{} {}", "Error:".bright_red(), e);
                 ExitCode::from(1)
