@@ -2,7 +2,7 @@ use crate::config::BarzelConfig;
 use crate::detect::{detect_workspace, Language, ProjectInfo, WorkspaceInfo};
 use crate::diff::DiffContext;
 use crate::error::Result;
-use crate::orchestrator::VerificationOrchestrator;
+use crate::orchestrator::{RunnerEvent, VerificationOrchestrator};
 use crate::report::{BarzelReport, LayerStatus, ReportStatus, Severity};
 use crate::runners::aisec::AiSecRunner;
 use crate::runners::bandit::BanditRunner;
@@ -69,6 +69,56 @@ pub fn run_verification(
     json_out: bool,
     since: Option<&str>,
 ) -> Result<BarzelReport> {
+    run_verification_with_progress(
+        RunVerificationOptions { target, layers, no_cache, fail_fast, stdio, json_out, since },
+        &|_| {},
+    )
+}
+
+pub fn run_verification_stdio_with_progress<F>(
+    target: Option<&Path>,
+    layers: Option<Vec<String>>,
+    no_cache: bool,
+    fail_fast: bool,
+    since: Option<&str>,
+    on_event: &F,
+) -> Result<BarzelReport>
+where
+    F: Fn(RunnerEvent<'_>) + Sync,
+{
+    run_verification_with_progress(
+        RunVerificationOptions {
+            target,
+            layers,
+            no_cache,
+            fail_fast,
+            stdio: true,
+            json_out: false,
+            since,
+        },
+        on_event,
+    )
+}
+
+struct RunVerificationOptions<'a> {
+    target: Option<&'a Path>,
+    layers: Option<Vec<String>>,
+    no_cache: bool,
+    fail_fast: bool,
+    stdio: bool,
+    json_out: bool,
+    since: Option<&'a str>,
+}
+
+fn run_verification_with_progress<F>(
+    options: RunVerificationOptions<'_>,
+    on_event: &F,
+) -> Result<BarzelReport>
+where
+    F: Fn(RunnerEvent<'_>) + Sync,
+{
+    let RunVerificationOptions { target, layers, no_cache, fail_fast, stdio, json_out, since } = options;
+
     if let Some(ref requested) = layers {
         validate_requested_layers(requested)?;
     }
@@ -132,7 +182,7 @@ pub fn run_verification(
                 }
             }
 
-            let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio)?;
+            let mut report = run_project_report(&project, &cfg, &layers, no_cache, fail_fast, stdio, on_event)?;
             report.fail_on = cfg.reporting.fail_on.clone();
             // Record diff metadata whether diff succeeded or fell back
             report.diff_since = since.map(str::to_string);
@@ -238,7 +288,7 @@ pub fn run_verification(
                     cfg.clone()
                 };
 
-                let member_report = run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio)?;
+                let member_report = run_project_report(member, &member_cfg, &layers, no_cache, fail_fast, stdio, on_event)?;
 
                 // Store per-package report for rich stdio output
                 use crate::report::WorkspaceMemberReport;
@@ -328,14 +378,18 @@ fn workspace_skip_layer(since: Option<&str>, ctx: &DiffContext) -> crate::report
 }
 
 /// Execute runners for a single `ProjectInfo` and return the report.
-fn run_project_report(
+fn run_project_report<F>(
     project: &ProjectInfo,
     cfg: &BarzelConfig,
     layers: &Option<Vec<String>>,
     no_cache: bool,
     fail_fast: bool,
     stdio: bool,
-) -> Result<BarzelReport> {
+    on_event: &F,
+) -> Result<BarzelReport>
+where
+    F: Fn(RunnerEvent<'_>) + Sync,
+{
     let threshold = cfg.layers.structural.mutation_threshold;
 
     // All runner instances must be named locals — their borrows must outlive `filtered`
@@ -400,7 +454,7 @@ fn run_project_report(
     if fail_fast { orchestrator = orchestrator.with_fail_fast(); }
 
     let mut report = if stdio {
-        orchestrator.run(project)?
+        orchestrator.run_with_events(project, on_event)?
     } else {
         let pb = make_spinner();
         let pb_cb = pb.clone();
@@ -820,7 +874,7 @@ mod tests {
         // Filter to Operational layer only so no language runners (Semgrep etc.) are
         // invoked — the test must not depend on external tool availability.
         let layers = Some(vec!["operational".to_string()]);
-        let report = run_project_report(&project, &cfg, &layers, false, false, true).unwrap();
+        let report = run_project_report(&project, &cfg, &layers, false, false, true, &|_| {}).unwrap();
 
         let has_health_check_layer = report.layers.iter().any(|l| l.runner == "health-check");
         assert!(!has_health_check_layer,

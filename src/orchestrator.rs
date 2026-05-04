@@ -37,17 +37,36 @@ impl<'a> VerificationOrchestrator<'a> {
     where
         F: Fn(&str, &str) + Sync,
     {
-        let project_root = Path::new(&project.root);
+        self.run_with_events(project, |event| {
+            if let RunnerEvent::Started { runner, layer } = event {
+                on_start(runner, layer);
+            }
+        })
+    }
 
-        // When fail_fast is set, run sequentially to stop on first failure.
-        // When fail_fast is off, phase-1 (Logic + Hostile + Operational) runs in parallel.
+    #[cfg(test)]
+    pub fn run(&self, project: &ProjectInfo) -> Result<BarzelReport> {
+        self.run_with_progress(project, |_, _| {})
+    }
+
+    /// Run with a richer per-runner event callback.
+    /// The callback receives a [`RunnerEvent`] before each runner starts and after it completes.
+    /// Human spinner callers should continue using [`run_with_progress`]; this is for
+    /// structured consumers such as the stdio protocol.
+    pub fn run_with_events<F>(&self, project: &ProjectInfo, on_event: F) -> Result<BarzelReport>
+    where
+        F: Fn(RunnerEvent<'_>) + Sync,
+    {
+        // Adapt: fire Started before run_one, Completed after.
+        // run_with_progress only fires on_start; we wrap it with a timing layer here
+        // by using a different dispatch path that records timestamps around run_one.
+        let project_root = Path::new(&project.root);
         let indexed_results: Vec<(usize, LayerResult)> = if self.fail_fast {
-            self.run_sequential(project, project_root, &on_start)
+            self.run_sequential_with_events(project, project_root, &on_event)
         } else {
-            self.run_parallel(project, project_root, &on_start)
+            self.run_parallel_with_events(project, project_root, &on_event)
         };
 
-        // Sort by (layer_priority, original_runner_index) for deterministic output
         let mut sorted = indexed_results;
         sorted.sort_by_key(|(i, r)| (layer_priority(layer_from_str(&r.name)), *i));
 
@@ -55,41 +74,37 @@ impl<'a> VerificationOrchestrator<'a> {
         for (_, result) in sorted {
             report.add_layer(result);
         }
-
         Ok(report)
     }
 
-    fn run_sequential<F>(
+    fn run_sequential_with_events<F>(
         &self,
         project: &ProjectInfo,
         project_root: &Path,
-        on_start: &F,
+        on_event: &F,
     ) -> Vec<(usize, LayerResult)>
     where
-        F: Fn(&str, &str) + Sync,
+        F: Fn(RunnerEvent<'_>) + Sync,
     {
         let mut results = Vec::new();
         for (i, runner) in self.runners.iter().enumerate() {
-            let result = self.run_one(runner, project, project_root, on_start);
+            let result = self.run_one_with_events(runner, project, project_root, on_event);
             let is_fail = matches!(result.status, LayerStatus::Fail);
             results.push((i, result));
-            if is_fail {
-                break;
-            }
+            if is_fail { break; }
         }
         results
     }
 
-    fn run_parallel<F>(
+    fn run_parallel_with_events<F>(
         &self,
         project: &ProjectInfo,
         project_root: &Path,
-        on_start: &F,
+        on_event: &F,
     ) -> Vec<(usize, LayerResult)>
     where
-        F: Fn(&str, &str) + Sync,
+        F: Fn(RunnerEvent<'_>) + Sync,
     {
-        // Phase 1: Logic + Hostile + Operational in parallel (indexed for stable ordering)
         let (phase1, phase2): (Vec<_>, Vec<_>) = self
             .runners
             .iter()
@@ -101,7 +116,7 @@ impl<'a> VerificationOrchestrator<'a> {
                 .iter()
                 .map(|(i, runner)| {
                     let i = *i;
-                    scope.spawn(move || (i, self.run_one(runner, project, project_root, on_start)))
+                    scope.spawn(move || (i, self.run_one_with_events(runner, project, project_root, on_event)))
                 })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -111,11 +126,10 @@ impl<'a> VerificationOrchestrator<'a> {
             matches!(r.status, LayerStatus::Fail) && r.name == "logic"
         });
 
-        // Phase 2: Structural runs after — skip if logic already failed (useless to mutate broken tests)
-        let mut phase2_results: Vec<(usize, LayerResult)> = Vec::new();
+        let mut phase2_results = Vec::new();
         if !logic_failed {
             for (i, runner) in &phase2 {
-                let result = self.run_one(runner, project, project_root, on_start);
+                let result = self.run_one_with_events(runner, project, project_root, on_event);
                 phase2_results.push((*i, result));
             }
         }
@@ -124,17 +138,17 @@ impl<'a> VerificationOrchestrator<'a> {
         phase1_results
     }
 
-    /// Run a single runner, handling unavailable/cached/error cases.
-    fn run_one<F>(
+    fn run_one_with_events<F>(
         &self,
         runner: &&dyn TestRunner,
         project: &ProjectInfo,
         project_root: &Path,
-        on_start: &F,
+        on_event: &F,
     ) -> LayerResult
     where
-        F: Fn(&str, &str) + Sync,
+        F: Fn(RunnerEvent<'_>) + Sync,
     {
+        // Unavailable and cached runners skip without events (nothing actually runs).
         if !runner.is_available(project) {
             return LayerResult {
                 name: runner.layer().as_str().to_string(),
@@ -170,14 +184,17 @@ impl<'a> VerificationOrchestrator<'a> {
             };
         }
 
-        on_start(runner.name(), runner.layer().as_str());
+        on_event(RunnerEvent::Started {
+            runner: runner.name(),
+            layer: runner.layer().as_str(),
+        });
 
-        match runner.run(project) {
-            Ok(result) => {
-                if is_cacheable(runner.layer()) && !matches!(result.status, LayerStatus::Fail) {
+        let result = match runner.run(project) {
+            Ok(r) => {
+                if is_cacheable(runner.layer()) && !matches!(r.status, LayerStatus::Fail) {
                     cache::save_current_hash(project_root, project.language, runner.name());
                 }
-                result
+                r
             }
             Err(e) => LayerResult {
                 name: runner.layer().as_str().to_string(),
@@ -192,12 +209,41 @@ impl<'a> VerificationOrchestrator<'a> {
                 metrics: LayerMetrics { failed: 1, ..Default::default() },
                 duration_ms: 0,
             },
-        }
-    }
+        };
 
-    pub fn run(&self, project: &ProjectInfo) -> Result<BarzelReport> {
-        self.run_with_progress(project, |_, _| {})
+        let status_str = match result.status {
+            LayerStatus::Pass => "pass",
+            LayerStatus::Partial => "partial",
+            LayerStatus::Fail => "fail",
+            LayerStatus::Skipped => "skipped",
+        };
+        on_event(RunnerEvent::Completed {
+            runner: runner.name(),
+            layer: runner.layer().as_str(),
+            status: status_str,
+            duration_ms: result.duration_ms,
+        });
+
+        result
     }
+}
+
+/// A progress event emitted by [`VerificationOrchestrator::run_with_events`].
+#[derive(Debug)]
+pub enum RunnerEvent<'a> {
+    /// Fired immediately before a runner's subprocess is invoked.
+    Started {
+        runner: &'a str,
+        layer: &'a str,
+    },
+    /// Fired immediately after a runner returns (pass, partial, or fail).
+    Completed {
+        runner: &'a str,
+        layer: &'a str,
+        /// The layer status string from the completed [`LayerResult`].
+        status: &'a str,
+        duration_ms: u64,
+    },
 }
 
 fn layer_from_str(s: &str) -> Layer {
@@ -495,5 +541,105 @@ mod tests {
         // Both ran concurrently — max concurrent count should be 2
         assert_eq!(MAX_CONCURRENT.load(Ordering::SeqCst), 2,
             "Logic and Hostile should run in parallel");
+    }
+
+    // ── run_with_events ───────────────────────────────────────────────────────
+
+    #[test]
+    fn run_with_events_emits_started_and_completed_for_available_runner() {
+        use super::RunnerEvent;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = PassRunner { layer: Layer::Logic, name: "mock-logic" };
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_cb = events.clone();
+
+        orch.run_with_events(&project, move |event| match event {
+            RunnerEvent::Started { runner, layer } => {
+                events_cb.lock().unwrap().push(format!("started:{}:{}", runner, layer));
+            }
+            RunnerEvent::Completed { runner, layer, status, .. } => {
+                events_cb.lock().unwrap().push(format!("completed:{}:{}:{}", runner, layer, status));
+            }
+        }).unwrap();
+
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 2, "expected exactly one started and one completed event");
+        assert_eq!(captured[0], "started:mock-logic:logic");
+        assert!(captured[1].starts_with("completed:mock-logic:logic:"), "completed event must carry status: {:?}", &*captured);
+    }
+
+    #[test]
+    fn run_with_events_started_comes_before_completed() {
+        use super::RunnerEvent;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = PassRunner { layer: Layer::Logic, name: "mock-logic" };
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let order_cb = order.clone();
+
+        orch.run_with_events(&project, move |event| {
+            order_cb.lock().unwrap().push(match event {
+                RunnerEvent::Started { .. } => "started",
+                RunnerEvent::Completed { .. } => "completed",
+            });
+        }).unwrap();
+
+        assert_eq!(*order.lock().unwrap(), vec!["started", "completed"]);
+    }
+
+    #[test]
+    fn run_with_events_no_events_for_unavailable_runner() {
+        use super::RunnerEvent;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = UnavailableRunner;
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let count_cb = count.clone();
+
+        orch.run_with_events(&project, move |_: RunnerEvent<'_>| {
+            *count_cb.lock().unwrap() += 1;
+        }).unwrap();
+
+        assert_eq!(*count.lock().unwrap(), 0, "unavailable runner must emit no events");
+    }
+
+    #[test]
+    fn run_with_events_completed_carries_duration_and_pass_status() {
+        use super::RunnerEvent;
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempdir().unwrap();
+        let project = rust_project(dir.path());
+        let runner = PassRunner { layer: Layer::Logic, name: "mock-logic" };
+        let orch = VerificationOrchestrator::new(vec![&runner as &dyn TestRunner]);
+
+        let completed_status: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let status_cb = completed_status.clone();
+        let completed_duration: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let duration_cb = completed_duration.clone();
+
+        orch.run_with_events(&project, move |event| {
+            if let RunnerEvent::Completed { status, duration_ms, .. } = event {
+                *status_cb.lock().unwrap() = Some(status.to_string());
+                *duration_cb.lock().unwrap() = Some(duration_ms);
+            }
+        }).unwrap();
+
+        let status = completed_status.lock().unwrap().clone().expect("completed event must fire");
+        assert_eq!(status, "pass");
+        assert_eq!(*completed_duration.lock().unwrap(), Some(1));
     }
 }
