@@ -92,9 +92,11 @@ fn metric_layers(layers: &[crate::report::LayerResult]) -> Vec<HistoryLayerMetri
 
 /// Persist a history entry under `{project_root}/.barzel/history/`.
 ///
-/// Filename: `{report_id_prefix}-{safe_suffix}.json`
-/// The safe suffix is derived from `package_path` (if set) or `language`,
-/// ensuring uniqueness within a single report even for workspace members.
+/// Filename: `{sanitize(report_id)}-{sanitize(suffix)}-{hash8(raw_suffix)}.json`
+/// where suffix is `package_path` (workspace members) or `language` (single project).
+/// Using the full sanitized report_id prevents prefix collisions across runs;
+/// hash8 of the raw suffix keeps paths that sanitize identically (e.g. "apps/web"
+/// vs "apps_web") in separate files.
 ///
 /// Best-effort: errors are returned so callers can log them without failing.
 pub fn save_entry(entry: &HistoryEntry, project_root: &Path) -> std::io::Result<()> {
@@ -503,23 +505,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let history_dir = dir.path().join(".barzel").join("history");
 
-        let base = single_report_with_coverage();
-        let mut entries = entries_from_report(&base);
-        assert_eq!(entries.len(), 1);
+        let base_layer = HistoryLayerMetric {
+            runner: "pytest".to_string(),
+            status: LayerStatus::Pass,
+            mutation_score: None,
+            coverage: Some(0.91),
+        };
+        let first = HistoryEntry {
+            report_id: "abcd1234-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string(),
+            timestamp: chrono::Utc::now(),
+            project: "proj".to_string(),
+            package_path: None,
+            language: "python".to_string(),
+            status: ReportStatus::Pass,
+            layers: vec![base_layer.clone()],
+        };
+        let mut second = first.clone();
+        // Same 8-char prefix "abcd1234", different full id
+        second.report_id = "abcd1234-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string();
 
-        // Clone the entry and give it a different report_id with the same 8-char prefix.
-        let mut second = entries[0].clone();
-        second.report_id = entries[0].report_id.replacen(
-            &entries[0].report_id[8..9],
-            "Z",
-            1,
-        );
-        // Ensure the first 8 chars still differ from the second entry's full id
-        // by making the second id completely different but with an identical prefix.
-        let original_id = entries[0].report_id.clone();
-        second.report_id = format!("{}ZZZZZZZZZZZZZZZZ", &original_id[..8]);
-
-        save_entry(&entries[0], dir.path()).unwrap();
+        save_entry(&first,  dir.path()).unwrap();
         save_entry(&second, dir.path()).unwrap();
 
         let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
@@ -550,10 +555,10 @@ mod tests {
         };
         let mut slash_entry = base_entry.clone();
         let mut underscore_entry = base_entry.clone();
-        slash_entry.package_path     = Some("apps/web".to_string());
+        slash_entry.package_path = Some("apps/web".to_string());
         underscore_entry.package_path = Some("apps_web".to_string());
 
-        save_entry(&slash_entry,      dir.path()).unwrap();
+        save_entry(&slash_entry, dir.path()).unwrap();
         save_entry(&underscore_entry, dir.path()).unwrap();
 
         let files: Vec<_> = std::fs::read_dir(&history_dir).unwrap().flatten().collect();
