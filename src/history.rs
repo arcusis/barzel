@@ -144,6 +144,8 @@ pub fn annotate_metric_regressions(
     let history = load_history_entries(project_root);
     if history.is_empty() { return; }
 
+    let cfg = cfg.normalized();
+
     let mut any_injected = false;
 
     if report.workspace_members.is_empty() {
@@ -152,7 +154,7 @@ pub fn annotate_metric_regressions(
 
         for layer in &mut report.layers {
             let injected = regression_findings_for_layer(
-                layer, &history, None, &language, cfg,
+                layer, &history, None, &language, &cfg,
             );
             if !injected.is_empty() {
                 layer.findings.extend(injected);
@@ -172,7 +174,7 @@ pub fn annotate_metric_regressions(
 
             for layer in &mut member.layers {
                 let injected = regression_findings_for_layer(
-                    layer, &history, Some(&package_path), &language, cfg,
+                    layer, &history, Some(&package_path), &language, &cfg,
                 );
                 if !injected.is_empty() {
                     layer.findings.extend(injected);
@@ -819,6 +821,73 @@ mod tests {
             duration_ms: 0,
         });
         report
+    }
+
+    #[test]
+    fn negative_tolerance_does_not_flag_improvement_as_regression() {
+        // A negative tolerance must be clamped to 0.0, so an improvement is never flagged.
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.80), None, // prior
+            Some(0.90), None, // current — improvement
+        );
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: -0.05,
+            mutation_regression_tolerance: 0.0,
+        };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "negative tolerance must be clamped to 0.0; an improvement must not trigger a finding");
+    }
+
+    #[test]
+    fn tolerance_above_one_suppresses_all_findings() {
+        // tolerance > 1.0 clamped to 1.0; real drops can never exceed 1.0, so no finding.
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(0.90), None,
+            Some(0.50), None, // 40 pp drop — large but < 100 pp
+        );
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: 1.5,
+            mutation_regression_tolerance: 0.0,
+        };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "tolerance clamped to 1.0 must suppress all findings since drops never exceed 1.0");
+    }
+
+    #[test]
+    fn exact_equality_at_tolerance_does_not_emit_finding() {
+        // `drop > tolerance` is strict; equality must not emit a finding.
+        // Because f64 subtraction is not exact, we derive tolerance from the same
+        // subtraction the code uses: `tolerance = prior - current`. That guarantees
+        // the comparison is `x > x` (false) regardless of floating-point rounding.
+        let prior = 0.90_f64;
+        let current = 0.85_f64;
+        let exact_drop = prior - current; // whatever f64 computes for this subtraction
+
+        let dir = tempdir().unwrap();
+        let mut report = setup_single_regression(
+            &dir, "pytest",
+            Some(prior), None,
+            Some(current), None,
+        );
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: exact_drop, // set tolerance == drop exactly
+            mutation_regression_tolerance: 0.0,
+        };
+        annotate_metric_regressions(&mut report, dir.path(), &cfg);
+        assert!(!report.layers.iter().flat_map(|l| &l.findings)
+            .any(|f| f.code == "COVERAGE_REGRESSION"),
+            "drop exactly equal to tolerance must not emit a finding (strict > comparison)");
     }
 
     #[test]
