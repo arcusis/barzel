@@ -152,8 +152,8 @@ fn handle_stdio() -> ExitCode {
             let path = req.project_path.as_deref().map(Path::new);
             let since = req.since.as_deref();
             let progress_id = request_id.clone();
-            let on_event = move |event: crate::orchestrator::RunnerEvent<'_>| {
-                emit_progress(&progress_id, progress_event_data(event));
+            let on_event = move |event: crate::orchestrator::RunnerEvent<'_>, package_path: Option<&str>| {
+                emit_progress(&progress_id, progress_event_data(event, package_path));
             };
             match run::run_verification_stdio_with_progress(
                 path,
@@ -479,13 +479,14 @@ fn emit_error(request_id: Option<String>, message: String) {
     println!("{}", serde_json::to_string(&resp).unwrap());
 }
 
-fn progress_event_data(event: crate::orchestrator::RunnerEvent<'_>) -> serde_json::Value {
+fn progress_event_data(event: crate::orchestrator::RunnerEvent<'_>, package_path: Option<&str>) -> serde_json::Value {
     use crate::orchestrator::RunnerEvent;
     match event {
         RunnerEvent::Started { runner, layer } => serde_json::json!({
             "event": "runner_started",
             "runner": runner,
             "layer": layer,
+            "package_path": package_path,
             "runner_status": null,
             "duration_ms": null,
         }),
@@ -493,6 +494,7 @@ fn progress_event_data(event: crate::orchestrator::RunnerEvent<'_>) -> serde_jso
             "event": "runner_completed",
             "runner": runner,
             "layer": layer,
+            "package_path": package_path,
             "runner_status": status,
             "duration_ms": duration_ms,
         }),
@@ -982,11 +984,12 @@ mod tests {
         let payload = progress_event_data(crate::orchestrator::RunnerEvent::Started {
             runner: "tsc",
             layer: "logic",
-        });
+        }, None);
 
         assert_eq!(payload["event"], "runner_started");
         assert_eq!(payload["runner"], "tsc");
         assert_eq!(payload["layer"], "logic");
+        assert!(payload["package_path"].is_null());
         assert!(payload["runner_status"].is_null());
         assert!(payload["duration_ms"].is_null());
     }
@@ -998,13 +1001,37 @@ mod tests {
             layer: "logic",
             status: "pass",
             duration_ms: 42,
-        });
+        }, None);
 
         assert_eq!(payload["event"], "runner_completed");
         assert_eq!(payload["runner"], "tsc");
         assert_eq!(payload["layer"], "logic");
+        assert!(payload["package_path"].is_null());
         assert_eq!(payload["runner_status"], "pass");
         assert_eq!(payload["duration_ms"], 42);
+    }
+
+    #[test]
+    fn progress_workspace_member_payload_includes_package_path() {
+        let payload = progress_event_data(crate::orchestrator::RunnerEvent::Started {
+            runner: "cargo-mutants",
+            layer: "structural",
+        }, Some("crates/api"));
+
+        assert_eq!(payload["event"], "runner_started");
+        assert_eq!(payload["runner"], "cargo-mutants");
+        assert_eq!(payload["package_path"], "crates/api");
+
+        let completed = progress_event_data(crate::orchestrator::RunnerEvent::Completed {
+            runner: "cargo-mutants",
+            layer: "structural",
+            status: "pass",
+            duration_ms: 99,
+        }, Some("crates/api"));
+
+        assert_eq!(completed["event"], "runner_completed");
+        assert_eq!(completed["package_path"], "crates/api");
+        assert_eq!(completed["runner_status"], "pass");
     }
 
     #[test]
@@ -1012,7 +1039,7 @@ mod tests {
         let payload = progress_event_data(crate::orchestrator::RunnerEvent::Started {
             runner: "pytest",
             layer: "logic",
-        });
+        }, None);
         let response = create_response("progress", Some("req-123".to_string()), Some(payload), None);
 
         assert_eq!(response.status, "progress");
@@ -1030,7 +1057,7 @@ mod tests {
             layer: "hostile",
             status: "pass",
             duration_ms: 123,
-        });
+        }, None);
 
         let envelope = serde_json::json!({
             "status": "progress",
