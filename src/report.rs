@@ -256,26 +256,52 @@ impl BarzelReport {
         Ok(best.map(|(report, _)| report))
     }
 
+    /// Load a report by exact full ID or by unambiguous prefix.
+    ///
+    /// Resolution rules:
+    /// - Exact full-ID match wins immediately, even if other reports share the prefix.
+    /// - No matches -> `Ok(None)`.
+    /// - Exactly one prefix match -> `Ok(Some(report))`.
+    /// - More than one prefix match -> `Err` with an "ambiguous" message listing the
+    ///   matching full IDs (sorted) so the caller can prompt for a longer prefix.
     pub fn load_by_id(base_dir: &Path, id: &str) -> crate::error::Result<Option<Self>> {
         let reports_dir = base_dir.join(".barzel").join("reports");
         if !reports_dir.exists() {
             return Ok(None);
         }
 
+        let mut prefix_matches: Vec<(String, Self)> = Vec::new();
+
         for entry in std::fs::read_dir(&reports_dir)?.flatten() {
             let path = entry.path();
-            if path.extension().map(|x| x == "json").unwrap_or(false) {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(report) = serde_json::from_str::<Self>(&content) {
-                        if report.id.starts_with(id) {
-                            return Ok(Some(report));
-                        }
+            if !path.extension().map(|x| x == "json").unwrap_or(false) { continue; }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(report) = serde_json::from_str::<Self>(&content) {
+                    if report.id == id {
+                        // Exact full-ID match wins immediately; no ambiguity possible
+                        return Ok(Some(report));
+                    }
+                    if report.id.starts_with(id) {
+                        prefix_matches.push((report.id.clone(), report));
                     }
                 }
             }
         }
 
-        Ok(None)
+        match prefix_matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(prefix_matches.remove(0).1)),
+            _ => {
+                let mut ids: Vec<String> = prefix_matches.into_iter().map(|(id, _)| id).collect();
+                ids.sort();
+                Err(crate::error::BarzelError::Detection(format!(
+                    "ambiguous report id prefix '{}': {} reports match ({}). Use a longer prefix.",
+                    id,
+                    ids.len(),
+                    ids.join(", ")
+                )))
+            }
+        }
     }
 }
 
@@ -510,6 +536,63 @@ mod tests {
         let loaded = BarzelReport::load_by_id(dir.path(), id_prefix).unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().id, report.id);
+    }
+
+    /// Build and save two reports whose IDs share a given 8-char prefix but differ in the rest.
+    /// Returns (dir, id_of_report_1, id_of_report_2).
+    fn two_reports_sharing_prefix(prefix: &str) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r1 = BarzelReport::new(dummy_project());
+        let mut r2 = BarzelReport::new(dummy_project());
+        // Override IDs to share a prefix but differ after it.
+        r1.id = format!("{}-aaaa-aaaa-aaaa-aaaaaaaaaaaa", prefix);
+        r2.id = format!("{}-bbbb-bbbb-bbbb-bbbbbbbbbbbb", prefix);
+        // Give them different timestamps so filenames are distinct.
+        r2.timestamp = r1.timestamp + chrono::Duration::seconds(1);
+        let id1 = r1.id.clone();
+        let id2 = r2.id.clone();
+        r1.save(dir.path()).unwrap();
+        r2.save(dir.path()).unwrap();
+        (dir, id1, id2)
+    }
+
+    #[test]
+    fn load_by_id_ambiguous_prefix_returns_err() {
+        let prefix = "abcdef01";
+        let (dir, id1, id2) = two_reports_sharing_prefix(prefix);
+
+        let result = BarzelReport::load_by_id(dir.path(), prefix);
+        assert!(result.is_err(), "ambiguous prefix must return Err, not Ok");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("ambiguous"), "error must contain 'ambiguous': {msg}");
+        assert!(msg.contains(prefix), "error must name the prefix: {msg}");
+        assert!(msg.contains(&id1), "error must list first matching id: {msg}");
+        assert!(msg.contains(&id2), "error must list second matching id: {msg}");
+    }
+
+    #[test]
+    fn load_by_id_exact_full_id_wins_over_ambiguous_prefix() {
+        let prefix = "abcdef01";
+        let (dir, id1, _id2) = two_reports_sharing_prefix(prefix);
+
+        // Using the full ID of report 1 must return report 1 exactly; no ambiguity.
+        let loaded = BarzelReport::load_by_id(dir.path(), &id1)
+            .expect("exact full id must not return Err")
+            .expect("exact full id must return Some");
+        assert_eq!(loaded.id, id1, "must return the exact-matched report");
+    }
+
+    #[test]
+    fn load_by_id_longer_unique_prefix_resolves_unambiguously() {
+        let prefix = "abcdef01";
+        let (dir, _id1, id2) = two_reports_sharing_prefix(prefix);
+
+        // id2 = "abcdef01-bbbb-..."; "abcdef01-b" is unique to it.
+        let unique_prefix = &id2[..10]; // "abcdef01-b"
+        let loaded = BarzelReport::load_by_id(dir.path(), unique_prefix)
+            .expect("unique longer prefix must not return Err")
+            .expect("unique longer prefix must return Some");
+        assert_eq!(loaded.id, id2, "must return the report whose id matches the longer prefix");
     }
 
     #[test]
