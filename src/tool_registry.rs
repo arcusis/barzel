@@ -151,20 +151,38 @@ pub fn apply_applicability(statuses: &mut [ToolStatus], project: &ProjectInfo, c
 
 /// Enrich statuses with workspace-aggregated applicability across all members.
 /// `applicable = any member says applicable`, `required = any member says required`.
+/// Each member's effective config is its local `.barzel.toml` when present, otherwise
+/// the root config passed in. This matches the semantics used during `run`.
 /// Reason strings identify the contributing member(s) by path and language.
 pub fn apply_applicability_workspace(
     statuses: &mut [ToolStatus],
     members: &[(String, ProjectInfo)],
     config: &BarzelConfig,
 ) {
-    let enabled = &config.layers.enabled;
+    // Load each member's effective config once before the status loop so a workspace
+    // with N members and T tools reads each .barzel.toml once, not T times.
+    let local_configs: Vec<Option<BarzelConfig>> = members
+        .iter()
+        .map(|(_, project)| {
+            let root = Path::new(&project.root);
+            if root.join(".barzel.toml").exists() {
+                Some(BarzelConfig::load_for_project(root))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let member_enabled_layers: Vec<&Vec<String>> = local_configs
+        .iter()
+        .map(|opt| opt.as_ref().map_or(&config.layers.enabled, |c| &c.layers.enabled))
+        .collect();
 
     for s in statuses.iter_mut() {
         let mut contributing: Vec<String> = Vec::new();
         let mut any_applicable = false;
         let mut any_required = false;
 
-        for (rel_path, project) in members {
+        for ((rel_path, project), enabled) in members.iter().zip(member_enabled_layers.iter()) {
             let root = Path::new(&project.root);
             let ws_root = project.workspace_root.as_deref().map(Path::new);
             let (applicable, _) = tool_applicability(s.name, project.language, root, ws_root);
@@ -730,6 +748,92 @@ mod tests {
 
         let pnpm = statuses.iter().find(|s| s.name == "pnpm").unwrap();
         assert!(pnpm.applicable, "pnpm applicable via workspace-root pnpm-lock.yaml");
+    }
+
+    // ── member-local config honoured for required calculation ─────────────────
+
+    /// Minimal complete .barzel.toml with `structural` disabled.
+    /// Partial TOML falls back to defaults in load_for_project, so all sections needed.
+    fn write_structural_disabled_config(dir: &std::path::Path) {
+        let toml = r#"
+[project]
+name = "member"
+language = "rust"
+
+[layers]
+enabled = ["logic", "hostile", "operational"]
+
+[layers.logic]
+property_based = true
+formal_verification = false
+
+[layers.structural]
+mutation_testing = false
+mutation_threshold = 95.0
+
+[layers.hostile]
+fuzzing = false
+sast = true
+
+[reporting]
+format = "json"
+fail_on = "high"
+"#;
+        std::fs::write(dir.join(".barzel.toml"), toml).unwrap();
+    }
+
+    #[test]
+    fn member_local_config_disabling_structural_makes_mutants_not_required() {
+        let member_dir = tempfile::tempdir().unwrap();
+        write_structural_disabled_config(member_dir.path());
+
+        let members = vec![
+            ("crates/api".to_string(), rust_project(member_dir.path().to_str().unwrap())),
+        ];
+        // Root config still has structural enabled
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
+        assert!(mutants.applicable, "cargo mutants still applicable for Rust member");
+        assert!(!mutants.required,  "cargo mutants must not be required when member local config disables structural");
+    }
+
+    #[test]
+    fn structural_remains_required_when_second_member_still_enables_it() {
+        let disabled_dir = tempfile::tempdir().unwrap();
+        write_structural_disabled_config(disabled_dir.path());
+
+        // Second member has no local config — uses root config which has structural enabled
+        let enabled_dir = tempfile::tempdir().unwrap();
+
+        let members = vec![
+            ("crates/disabled".to_string(), rust_project(disabled_dir.path().to_str().unwrap())),
+            ("crates/enabled".to_string(),  rust_project(enabled_dir.path().to_str().unwrap())),
+        ];
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
+        assert!(mutants.applicable, "cargo mutants applicable (both members are Rust)");
+        assert!(mutants.required,   "cargo mutants required because crates/enabled still has structural enabled");
+    }
+
+    #[test]
+    fn member_without_local_config_uses_root_config() {
+        let member_dir = tempfile::tempdir().unwrap();
+        // No .barzel.toml — should fall through to root config
+
+        let members = vec![
+            ("crates/api".to_string(), rust_project(member_dir.path().to_str().unwrap())),
+        ];
+        // Root config has structural enabled (default)
+        let mut statuses = probe_all(&MockProcessRunner::passing("ok"));
+        apply_applicability_workspace(&mut statuses, &members, &default_config());
+
+        let mutants = statuses.iter().find(|s| s.name == "cargo mutants").unwrap();
+        assert!(mutants.applicable, "cargo mutants applicable for Rust");
+        assert!(mutants.required,   "cargo mutants required when root config has structural enabled and no local override");
     }
 
     #[test]
