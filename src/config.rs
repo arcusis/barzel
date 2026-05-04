@@ -19,9 +19,11 @@ pub struct HistoryConfig {
     /// Minimum absolute drop in coverage (0.0–1.0) before a finding is emitted.
     /// Default 0.0 means any decrease triggers a finding.
     /// Example: 0.02 means only report drops greater than 2 percentage points.
+    /// Values outside 0.0..=1.0 are clamped to the nearest valid bound.
     #[serde(default)]
     pub coverage_regression_tolerance: f64,
     /// Minimum absolute drop in mutation score (0.0–1.0) before a finding is emitted.
+    /// Values outside 0.0..=1.0 are clamped to the nearest valid bound.
     #[serde(default)]
     pub mutation_regression_tolerance: f64,
 }
@@ -34,6 +36,25 @@ impl Default for HistoryConfig {
             enabled: true,
             coverage_regression_tolerance: 0.0,
             mutation_regression_tolerance: 0.0,
+        }
+    }
+}
+
+impl HistoryConfig {
+    /// Return a validated copy with tolerances clamped to [0.0, 1.0].
+    ///
+    /// A negative tolerance inverts the regression signal (`drop > negative` is true for
+    /// any improvement). Non-finite values (NaN, ±Inf) are treated as 0.0.
+    /// Values above 1.0 suppress all real-world findings because scores are fractions
+    /// (0.91 = 91%) and a drop can never exceed 1.0.
+    pub fn normalized(&self) -> Self {
+        let clamp_tolerance = |v: f64| {
+            if !v.is_finite() { 0.0 } else { v.clamp(0.0, 1.0) }
+        };
+        Self {
+            enabled: self.enabled,
+            coverage_regression_tolerance: clamp_tolerance(self.coverage_regression_tolerance),
+            mutation_regression_tolerance: clamp_tolerance(self.mutation_regression_tolerance),
         }
     }
 }
@@ -690,6 +711,74 @@ mutation_regression_tolerance = 0.05
         assert!(cfg.history.enabled);
         assert!((cfg.history.coverage_regression_tolerance - 0.02).abs() < 1e-9);
         assert!((cfg.history.mutation_regression_tolerance - 0.05).abs() < 1e-9);
+    }
+
+    // ── HistoryConfig::normalized ─────────────────────────────────────────────
+
+    #[test]
+    fn negative_tolerance_clamped_to_zero() {
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: -0.05,
+            mutation_regression_tolerance: -1.0,
+        };
+        let n = cfg.normalized();
+        assert_eq!(n.coverage_regression_tolerance, 0.0,
+            "negative coverage tolerance must be clamped to 0.0");
+        assert_eq!(n.mutation_regression_tolerance, 0.0,
+            "negative mutation tolerance must be clamped to 0.0");
+    }
+
+    #[test]
+    fn tolerance_above_one_clamped_to_one() {
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: 1.5,
+            mutation_regression_tolerance: 99.0,
+        };
+        let n = cfg.normalized();
+        assert_eq!(n.coverage_regression_tolerance, 1.0,
+            "tolerance > 1.0 must be clamped to 1.0 (scores are stored as fractions)");
+        assert_eq!(n.mutation_regression_tolerance, 1.0);
+    }
+
+    #[test]
+    fn valid_tolerance_passes_through_unchanged() {
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: 0.02,
+            mutation_regression_tolerance: 0.05,
+        };
+        let n = cfg.normalized();
+        assert!((n.coverage_regression_tolerance - 0.02).abs() < 1e-9);
+        assert!((n.mutation_regression_tolerance - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_tolerance_passes_through_unchanged() {
+        let cfg = HistoryConfig::default();
+        let n = cfg.normalized();
+        assert_eq!(n.coverage_regression_tolerance, 0.0);
+        assert_eq!(n.mutation_regression_tolerance, 0.0);
+        assert!(n.enabled);
+    }
+
+    #[test]
+    fn enabled_flag_preserved_through_normalization() {
+        let cfg = HistoryConfig { enabled: false, ..HistoryConfig::default() };
+        assert!(!cfg.normalized().enabled);
+    }
+
+    #[test]
+    fn non_finite_tolerance_treated_as_zero() {
+        let cfg = HistoryConfig {
+            enabled: true,
+            coverage_regression_tolerance: f64::NAN,
+            mutation_regression_tolerance: f64::INFINITY,
+        };
+        let n = cfg.normalized();
+        assert_eq!(n.coverage_regression_tolerance, 0.0, "NaN tolerance must become 0.0");
+        assert_eq!(n.mutation_regression_tolerance, 0.0, "Inf tolerance must become 0.0");
     }
 
     #[test]
